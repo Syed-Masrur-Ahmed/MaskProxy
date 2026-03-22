@@ -1,0 +1,107 @@
+name: maskproxy
+
+services:
+
+  # ── PostgreSQL ──────────────────────────────────────────────────────────────
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    volumes:
+      - db_data:/var/lib/postgresql/data
+    ports:
+      - "5433:5432"   # 5432 is already in use by a local Postgres install
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    networks:
+      - maskproxy
+
+  # ── Redis ───────────────────────────────────────────────────────────────────
+  cache:
+    image: redis:8-alpine
+    restart: unless-stopped
+    command: redis-server --save 60 1 --loglevel warning
+    volumes:
+      - redis_data:/data
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    networks:
+      - maskproxy
+
+  # ── FastAPI backend ─────────────────────────────────────────────────────────
+  backend:
+    build:
+      context: apps/backend
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      DATABASE_URL: ${DATABASE_URL}
+      REDIS_URL: ${REDIS_URL}
+    volumes:
+      # Hot-reload: mount source over the image copy
+      - ./apps/backend:/app
+      # Keep the container's site-packages intact
+      - /app/.venv
+    ports:
+      - "8000:8000"
+    depends_on:
+      db:
+        condition: service_healthy
+      cache:
+        condition: service_healthy
+    networks:
+      - maskproxy
+
+  # ── Next.js frontend ────────────────────────────────────────────────────────
+  frontend:
+    build:
+      context: apps/frontend
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    environment:
+      # Server-side only — used by Next.js rewrites, never sent to the browser
+      BACKEND_URL: http://backend:8000
+    volumes:
+      # Hot-reload: mount source over the image copy
+      - ./apps/frontend:/app
+      # Keep node_modules from the image intact
+      - /app/node_modules
+      - /app/.next
+    ports:
+      - "3000:3000"
+    depends_on:
+      - backend
+    networks:
+      - maskproxy
+
+  # ── Rust proxy (placeholder) ────────────────────────────────────────────────
+  proxy:
+    build:
+      context: apps/proxy
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    networks:
+      - maskproxy
+
+volumes:
+  db_data:
+  redis_data:
+
+networks:
+  maskproxy:
+    driver: bridge

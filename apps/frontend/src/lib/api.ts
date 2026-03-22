@@ -1,4 +1,6 @@
-const BASE_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
+// Relative path — Next.js rewrites /api/* → backend internally.
+// Works both in Docker and local dev without any env var in the browser.
+const BASE_URL = "/api";
 
 export type PrivacyConfig = {
   mask_names: boolean;

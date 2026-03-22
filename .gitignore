@@ -27,6 +27,12 @@ pnpm-debug.log*
 .DS_Store
 Thumbs.db
 
+# Rust
+apps/proxy/target/
+
+# Docker
+.env.*.local
+
 # venv
 venv/
 
