@@ -29,3 +29,6 @@ Thumbs.db
 
 # venv
 venv/
+
+# fastapi
+__pycache__/
