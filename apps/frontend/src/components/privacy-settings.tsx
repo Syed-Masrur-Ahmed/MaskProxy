@@ -1,72 +1,82 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Switch } from "@/components/ui/switch";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Separator } from "@/components/ui/separator";
 import { Shield } from "lucide-react";
+import { fetchConfig, saveConfig, type PrivacyConfig } from "@/lib/api";
 
-type PrivacySetting = {
-  id: string;
+type SettingMeta = {
+  id: keyof PrivacyConfig;
   label: string;
   description: string;
-  defaultEnabled: boolean;
 };
 
-const PRIVACY_SETTINGS: PrivacySetting[] = [
+const SETTINGS_META: SettingMeta[] = [
   {
     id: "mask_names",
     label: "Mask Person Names",
     description: "Replace detected names with [PERSON_N] tokens",
-    defaultEnabled: true,
   },
   {
     id: "mask_emails",
     label: "Mask Email Addresses",
     description: "Replace email addresses with [EMAIL_N] tokens",
-    defaultEnabled: true,
   },
   {
     id: "mask_phones",
     label: "Mask Phone Numbers",
     description: "Replace phone numbers with [PHONE_N] tokens",
-    defaultEnabled: true,
   },
   {
     id: "mask_ssn",
     label: "Mask SSNs",
     description: "Replace Social Security Numbers with [SSN_N] tokens",
-    defaultEnabled: true,
   },
   {
     id: "mask_addresses",
     label: "Mask Addresses",
     description: "Replace physical addresses with [ADDRESS_N] tokens",
-    defaultEnabled: false,
   },
   {
     id: "semantic_routing",
     label: "Semantic Routing",
     description: "Route sensitive prompts to local inference instead of cloud LLMs",
-    defaultEnabled: false,
   },
   {
     id: "rehydrate_responses",
     label: "Rehydrate Responses",
     description: "Replace placeholder tokens with real values in LLM responses",
-    defaultEnabled: true,
   },
 ];
 
 export function PrivacySettings() {
-  const [settings, setSettings] = useState<Record<string, boolean>>(
-    Object.fromEntries(PRIVACY_SETTINGS.map((s) => [s.id, s.defaultEnabled]))
-  );
+  const [config, setConfig] = useState<PrivacyConfig | null>(null);
+  const [error, setError] = useState<string | null>(null);
 
-  const toggle = (id: string) =>
-    setSettings((prev) => ({ ...prev, [id]: !prev[id] }));
+  useEffect(() => {
+    fetchConfig()
+      .then(setConfig)
+      .catch((e) => setError(e.message));
+  }, []);
 
-  const enabledCount = Object.values(settings).filter(Boolean).length;
+  async function toggle(id: keyof PrivacyConfig) {
+    if (!config) return;
+    const next = { ...config, [id]: !config[id] };
+    setConfig(next);
+    try {
+      const saved = await saveConfig(next);
+      setConfig(saved);
+    } catch (e) {
+      setConfig(config); // revert on failure
+      setError(e instanceof Error ? e.message : "Failed to save");
+    }
+  }
+
+  const enabledCount = config
+    ? SETTINGS_META.filter((s) => config[s.id]).length
+    : 0;
 
   return (
     <Card>
@@ -76,11 +86,18 @@ export function PrivacySettings() {
           Privacy Settings
         </CardTitle>
         <CardDescription>
-          {enabledCount} of {PRIVACY_SETTINGS.length} protections active
+          {config
+            ? `${enabledCount} of ${SETTINGS_META.length} protections active`
+            : error
+              ? "Failed to load settings"
+              : "Loading…"}
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-1 p-0 pb-2">
-        {PRIVACY_SETTINGS.map((setting, i) => (
+        {error && (
+          <p className="px-4 py-2 text-xs text-destructive">{error}</p>
+        )}
+        {SETTINGS_META.map((setting, i) => (
           <div key={setting.id}>
             {i > 0 && <Separator className="mx-4 w-auto" />}
             <div className="flex items-center justify-between px-4 py-3">
@@ -89,8 +106,9 @@ export function PrivacySettings() {
                 <p className="text-xs text-muted-foreground">{setting.description}</p>
               </div>
               <Switch
-                checked={settings[setting.id]}
+                checked={config ? !!config[setting.id] : false}
                 onCheckedChange={() => toggle(setting.id)}
+                disabled={!config}
                 aria-label={setting.label}
               />
             </div>

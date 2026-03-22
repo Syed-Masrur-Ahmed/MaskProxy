@@ -26,3 +26,9 @@ pnpm-debug.log*
 # OS
 .DS_Store
 Thumbs.db
+
+# venv
+venv/
+
+# fastapi
+__pycache__/
