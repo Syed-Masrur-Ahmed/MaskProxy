@@ -1,7 +1,11 @@
+"use client";
+
 import Link from "next/link";
-import { Shield, Activity, Settings, BarChart3, Key, GitBranch } from "lucide-react";
+import { usePathname, useRouter } from "next/navigation";
+import { Shield, Activity, Settings, BarChart3, Key, GitBranch, LogOut } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Separator } from "@/components/ui/separator";
+import { useAuth } from "@/lib/auth";
 
 const navItems = [
   { label: "Dashboard", href: "/", icon: BarChart3 },
@@ -11,7 +15,16 @@ const navItems = [
   { label: "Settings", href: "/settings", icon: Settings },
 ];
 
-export function Sidebar({ activePath = "/" }: { activePath?: string }) {
+export function Sidebar() {
+  const { userEmail, logout } = useAuth();
+  const pathname = usePathname();
+  const router = useRouter();
+
+  function handleLogout() {
+    logout();
+    router.replace("/login");
+  }
+
   return (
     <aside className="flex h-screen w-60 flex-col border-r bg-sidebar">
       {/* Logo */}
@@ -35,7 +48,7 @@ export function Sidebar({ activePath = "/" }: { activePath?: string }) {
             href={href}
             className={cn(
               "flex items-center gap-3 rounded-md px-3 py-2 text-sm font-medium transition-colors",
-              activePath === href
+              pathname === href
                 ? "bg-sidebar-accent text-sidebar-accent-foreground"
                 : "text-sidebar-foreground hover:bg-sidebar-accent hover:text-sidebar-accent-foreground"
             )}
@@ -49,11 +62,23 @@ export function Sidebar({ activePath = "/" }: { activePath?: string }) {
       <Separator />
 
       {/* Footer */}
-      <div className="px-5 py-4">
+      <div className="flex flex-col gap-3 px-5 py-4">
         <div className="flex items-center gap-2">
           <span className="inline-flex h-2 w-2 rounded-full bg-emerald-500" />
           <span className="text-xs text-muted-foreground">Proxy running · port 8080</span>
         </div>
+        {userEmail && (
+          <div className="flex items-center justify-between">
+            <span className="truncate text-xs text-muted-foreground">{userEmail}</span>
+            <button
+              onClick={handleLogout}
+              className="ml-2 shrink-0 text-muted-foreground transition-colors hover:text-foreground"
+              aria-label="Log out"
+            >
+              <LogOut className="h-3.5 w-3.5" />
+            </button>
+          </div>
+        )}
       </div>
     </aside>
   );
