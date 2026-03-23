@@ -5,6 +5,7 @@ from typing import Any
 import httpx
 import pytest
 from fastapi import FastAPI, Request
+from fastapi.responses import PlainTextResponse, Response
 
 from app.config import Settings
 from app.main import create_app
@@ -138,6 +139,36 @@ async def test_forwards_only_allowed_headers_and_overrides_authorization() -> No
 
 
 @pytest.mark.asyncio
+async def test_body_session_id_is_used_for_state_but_not_forwarded_upstream() -> None:
+    captured: dict[str, Any] = {}
+    upstream = FastAPI()
+
+    @upstream.post("/v1/chat/completions")
+    async def upstream_chat(request: Request) -> dict[str, Any]:
+        captured["body"] = await request.json()
+        return {"ok": True}
+
+    app = create_app(
+        settings=build_settings(),
+        session_store=SpySessionStore(),
+        upstream_transport=httpx.ASGITransport(app=upstream),
+    )
+
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://testserver") as client:
+        response = await client.post(
+            "/v1/chat/completions",
+            json={
+                "session_id": "body-session",
+                "messages": [{"role": "user", "content": "alice@example.com"}],
+            },
+        )
+
+    assert response.status_code == 200
+    assert response.headers["x-session-id"] == "body-session"
+    assert "session_id" not in captured["body"]
+
+
+@pytest.mark.asyncio
 async def test_masks_content_fields_only_and_leaves_stop_untouched() -> None:
     captured: dict[str, Any] = {}
     upstream = FastAPI()
@@ -177,6 +208,35 @@ async def test_masks_content_fields_only_and_leaves_stop_untouched() -> None:
     assert content[1]["text"] == "Backup <<MASK:EMAIL_1:MASK>>"
     assert content[2]["text"] == "Call <<MASK:PHONE_1:MASK>>"
     assert captured["body"]["stop"] == "leave alice@example.com alone"
+
+
+@pytest.mark.asyncio
+async def test_prompt_list_strings_are_masked() -> None:
+    captured: dict[str, Any] = {}
+    upstream = FastAPI()
+
+    @upstream.post("/v1/chat/completions")
+    async def upstream_chat(request: Request) -> dict[str, Any]:
+        captured["body"] = await request.json()
+        return {"ok": True}
+
+    app = create_app(
+        settings=build_settings(),
+        session_store=SpySessionStore(),
+        upstream_transport=httpx.ASGITransport(app=upstream),
+    )
+
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://testserver") as client:
+        response = await client.post(
+            "/v1/chat/completions",
+            json={"prompt": ["Email alice@example.com", "Call 415-555-2671"]},
+        )
+
+    assert response.status_code == 200
+    assert captured["body"]["prompt"] == [
+        "Email <<MASK:EMAIL_1:MASK>>",
+        "Call <<MASK:PHONE_1:MASK>>",
+    ]
 
 
 @pytest.mark.asyncio
@@ -323,6 +383,78 @@ async def test_upstream_error_status_and_body_are_preserved_and_rehydrated() -> 
 
 
 @pytest.mark.asyncio
+async def test_upstream_non_json_error_body_uses_text_fallback() -> None:
+    upstream = FastAPI()
+
+    @upstream.post("/v1/chat/completions")
+    async def upstream_chat(request: Request):
+        return PlainTextResponse("gateway blew up", status_code=502)
+
+    app = create_app(
+        settings=build_settings(),
+        session_store=SpySessionStore(),
+        upstream_transport=httpx.ASGITransport(app=upstream),
+    )
+
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://testserver") as client:
+        response = await client.post(
+            "/v1/chat/completions",
+            json={"messages": [{"role": "user", "content": "alice@example.com"}]},
+        )
+
+    assert response.status_code == 502
+    assert response.json()["error"] == "gateway blew up"
+
+
+@pytest.mark.asyncio
+async def test_upstream_non_json_success_body_returns_502() -> None:
+    upstream = FastAPI()
+
+    @upstream.post("/v1/chat/completions")
+    async def upstream_chat(request: Request):
+        return PlainTextResponse("<html>ok?</html>", status_code=200)
+
+    app = create_app(
+        settings=build_settings(),
+        session_store=SpySessionStore(),
+        upstream_transport=httpx.ASGITransport(app=upstream),
+    )
+
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://testserver") as client:
+        response = await client.post(
+            "/v1/chat/completions",
+            json={"messages": [{"role": "user", "content": "alice@example.com"}]},
+        )
+
+    assert response.status_code == 502
+    assert response.json()["error"] == "Upstream returned non-JSON success response: <html>ok?</html>"
+
+
+@pytest.mark.asyncio
+async def test_upstream_empty_success_body_returns_502() -> None:
+    upstream = FastAPI()
+
+    @upstream.post("/v1/chat/completions")
+    async def upstream_chat(request: Request):
+        return Response(content=b"", media_type="text/plain", status_code=200)
+
+    app = create_app(
+        settings=build_settings(),
+        session_store=SpySessionStore(),
+        upstream_transport=httpx.ASGITransport(app=upstream),
+    )
+
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://testserver") as client:
+        response = await client.post(
+            "/v1/chat/completions",
+            json={"messages": [{"role": "user", "content": "alice@example.com"}]},
+        )
+
+    assert response.status_code == 502
+    assert response.json()["error"] == "Upstream returned non-JSON success response: "
+
+
+@pytest.mark.asyncio
 async def test_rejects_oversized_body() -> None:
     app = create_app(
         settings=build_settings(max_body_bytes=64),
@@ -335,6 +467,25 @@ async def test_rejects_oversized_body() -> None:
             "/v1/chat/completions",
             content='{"messages":[{"role":"user","content":"' + ("x" * 128) + '"}]}',
             headers={"content-type": "application/json"},
+        )
+
+    assert response.status_code == 413
+    assert response.json()["detail"] == "Request body too large."
+
+
+@pytest.mark.asyncio
+async def test_rejects_content_length_over_limit_before_body_parse() -> None:
+    app = create_app(
+        settings=build_settings(max_body_bytes=64),
+        session_store=SpySessionStore(),
+        upstream_transport=httpx.ASGITransport(app=FastAPI()),
+    )
+
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://testserver") as client:
+        response = await client.post(
+            "/v1/chat/completions",
+            content="{",
+            headers={"content-type": "application/json", "content-length": "128"},
         )
 
     assert response.status_code == 413
@@ -369,6 +520,77 @@ async def test_prompt_only_and_null_message_content_do_not_crash() -> None:
     assert response.status_code == 200
     assert captured["body"]["prompt"] == "Contact <<MASK:EMAIL_1:MASK>>"
     assert captured["body"]["messages"][0]["content"] is None
+
+
+@pytest.mark.asyncio
+async def test_message_without_content_key_does_not_crash() -> None:
+    captured: dict[str, Any] = {}
+    upstream = FastAPI()
+
+    @upstream.post("/v1/chat/completions")
+    async def upstream_chat(request: Request) -> dict[str, Any]:
+        captured["body"] = await request.json()
+        return {"ok": True}
+
+    app = create_app(
+        settings=build_settings(),
+        session_store=SpySessionStore(),
+        upstream_transport=httpx.ASGITransport(app=upstream),
+    )
+
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://testserver") as client:
+        response = await client.post(
+            "/v1/chat/completions",
+            json={"messages": [{"role": "assistant"}]},
+        )
+
+    assert response.status_code == 200
+    assert captured["body"]["messages"] == [{"role": "assistant"}]
+
+
+@pytest.mark.asyncio
+async def test_null_body_session_id_generates_request_session_id() -> None:
+    captured: dict[str, Any] = {}
+    upstream = FastAPI()
+
+    @upstream.post("/v1/chat/completions")
+    async def upstream_chat(request: Request) -> dict[str, Any]:
+        captured["body"] = await request.json()
+        return {"ok": True}
+
+    app = create_app(
+        settings=build_settings(),
+        session_store=SpySessionStore(),
+        upstream_transport=httpx.ASGITransport(app=upstream),
+    )
+
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://testserver") as client:
+        response = await client.post(
+            "/v1/chat/completions",
+            json={"session_id": None, "messages": [{"role": "user", "content": "alice@example.com"}]},
+        )
+
+    assert response.status_code == 200
+    assert response.headers["x-session-id"].startswith("req-")
+    assert "session_id" not in captured["body"]
+
+
+@pytest.mark.asyncio
+async def test_non_string_body_session_id_is_rejected() -> None:
+    app = create_app(
+        settings=build_settings(),
+        session_store=SpySessionStore(),
+        upstream_transport=httpx.ASGITransport(app=FastAPI()),
+    )
+
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://testserver") as client:
+        response = await client.post(
+            "/v1/chat/completions",
+            json={"session_id": 123, "messages": [{"role": "user", "content": "alice@example.com"}]},
+        )
+
+    assert response.status_code == 400
+    assert response.json()["detail"] == "Invalid session ID."
 
 
 def test_mapping_state_restores_multiword_entity_counters() -> None:

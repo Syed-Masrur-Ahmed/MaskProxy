@@ -9,6 +9,7 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
 from app.config import Settings, get_settings
+from app.detectors import Detector
 from app.proxy_service import ProxyService, UpstreamProxyError
 from app.session_store import RedisSessionStore, SessionStore
 
@@ -17,6 +18,7 @@ def create_app(
     settings: Settings | None = None,
     session_store: SessionStore | None = None,
     upstream_transport: httpx.AsyncBaseTransport | None = None,
+    detector: Detector | None = None,
 ) -> FastAPI:
     resolved_settings = settings or get_settings()
     resolved_store = session_store or RedisSessionStore(resolved_settings.redis_url)
@@ -24,6 +26,7 @@ def create_app(
         settings=resolved_settings,
         session_store=resolved_store,
         upstream_transport=upstream_transport,
+        detector=detector,
     )
 
     @asynccontextmanager
@@ -42,6 +45,16 @@ def create_app(
 
     @app.post("/v1/chat/completions")
     async def chat_completions(request: Request) -> JSONResponse:
+        content_length = request.headers.get("content-length")
+        if content_length is not None:
+            try:
+                if int(content_length) > app.state.settings.max_body_bytes:
+                    return JSONResponse(status_code=413, content={"detail": "Request body too large."})
+            except ValueError:
+                return JSONResponse(status_code=400, content={"detail": "Invalid Content-Length header."})
+
+        # Known v1 limitation: chunked requests without Content-Length are still buffered
+        # by Starlette before this second size check can reject them.
         body = await request.body()
         if len(body) > app.state.settings.max_body_bytes:
             return JSONResponse(status_code=413, content={"detail": "Request body too large."})

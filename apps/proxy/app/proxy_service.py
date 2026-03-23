@@ -9,6 +9,7 @@ from fastapi import HTTPException, Request
 from fastapi.responses import JSONResponse
 
 from app.config import Settings
+from app.detectors import CompositeDetector, Detector, RegexDetector
 from app.masking import MappingState, mask_request_payload, rehydrate_value
 from app.session_store import SessionStore, SessionStoreError
 
@@ -29,9 +30,11 @@ class ProxyService:
         settings: Settings,
         session_store: SessionStore,
         upstream_transport: httpx.AsyncBaseTransport | None = None,
+        detector: Detector | None = None,
     ) -> None:
         self._settings = settings
         self._session_store = session_store
+        self._detector = detector or CompositeDetector([RegexDetector()])
         self._client = httpx.AsyncClient(
             base_url=str(settings.upstream_base_url).rstrip("/"),
             timeout=30.0,
@@ -57,7 +60,7 @@ class ProxyService:
             ) from exc
 
         mapping_state = MappingState.from_placeholder_mapping(existing_mapping)
-        masked_payload = mask_request_payload(payload, mapping_state)
+        masked_payload = mask_request_payload(payload, mapping_state, self._detector)
 
         try:
             await self._session_store.save_mapping(
@@ -85,7 +88,14 @@ class ProxyService:
         except httpx.HTTPError as exc:
             raise HTTPException(status_code=502, detail="Failed to reach upstream provider.") from exc
 
-        response_payload = upstream_response.json()
+        try:
+            response_payload = upstream_response.json()
+        except ValueError:
+            truncated_text = self._truncate_text(upstream_response.text)
+            raise UpstreamProxyError(
+                502,
+                {"error": f"Upstream returned non-JSON success response: {truncated_text}"},
+            )
         rehydrated = rehydrate_value(response_payload, mapping_state.placeholder_to_real)
         return rehydrated, session_id
 
@@ -128,4 +138,9 @@ class ProxyService:
                 return payload
             return {"error": payload}
         except ValueError:
-            return {"error": response.text}
+            return {"error": self._truncate_text(response.text)}
+
+    def _truncate_text(self, text: str, limit: int = 512) -> str:
+        if len(text) <= limit:
+            return text
+        return f"{text[:limit]}..."

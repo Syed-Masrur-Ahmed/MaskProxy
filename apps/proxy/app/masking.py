@@ -5,22 +5,9 @@ import re
 from dataclasses import dataclass, field
 from typing import Any
 
-
-ENTITY_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
-    ("EMAIL", re.compile(r"\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b", re.IGNORECASE)),
-    ("PHONE", re.compile(r"(?:(?<=\D)|^)(?:\+?1[-.\s]?)?(?:\(?\d{3}\)?[-.\s]?){2}\d{4}(?=\D|$)")),
-    ("SSN", re.compile(r"\b\d{3}-\d{2}-\d{4}\b")),
-)
+from app.detectors import Detector
 PLACEHOLDER_PATTERN = re.compile(r"<<MASK:(?P<kind>[A-Z_]+)_(?P<index>\d+):MASK>>")
-CONTENT_PART_TEXT_KEYS = frozenset({"text", "input_text"})
-
-
-@dataclass(order=True)
-class EntityMatch:
-    start: int
-    end: int
-    kind: str
-    value: str
+CONTENT_PART_TEXT_KEYS = frozenset({"text"})
 
 
 @dataclass
@@ -47,6 +34,8 @@ class MappingState:
         return state
 
     def placeholder_for(self, kind: str, value: str) -> str:
+        # Deduplication is intentionally keyed by raw value, not (kind, value), so repeated
+        # occurrences of the same literal across the payload reuse a single placeholder.
         existing = self.real_to_placeholder.get(value)
         if existing:
             return existing
@@ -59,28 +48,11 @@ class MappingState:
         self.placeholder_to_real[placeholder] = value
         return placeholder
 
-
-def _find_matches(text: str) -> list[EntityMatch]:
-    matches: list[EntityMatch] = []
-    for kind, pattern in ENTITY_PATTERNS:
-        for match in pattern.finditer(text):
-            matches.append(EntityMatch(match.start(), match.end(), kind, match.group(0)))
-
-    matches.sort(key=lambda item: (item.start, -(item.end - item.start), item.kind))
-
-    non_overlapping: list[EntityMatch] = []
-    current_end = -1
-    for match in matches:
-        if match.start < current_end:
-            continue
-        non_overlapping.append(match)
-        current_end = match.end
-
-    return non_overlapping
-
-
-def mask_text(text: str, state: MappingState) -> str:
-    matches = _find_matches(text)
+def mask_text(text: str, state: MappingState, detector: Detector) -> str:
+    # Known v1 limitation: existing <<MASK:...:MASK>> literals in user input are not
+    # escaped before entity masking, so a later response echo could still be rehydrated.
+    # Hardening should detect or escape those sequences before masking runs.
+    matches = sorted(detector.detect(text), key=lambda match: match.start)
     if not matches:
         return text
 
@@ -96,28 +68,15 @@ def mask_text(text: str, state: MappingState) -> str:
     return "".join(chunks)
 
 
-def mask_value(value: Any, state: MappingState) -> Any:
+def mask_content_value(value: Any, state: MappingState, detector: Detector) -> Any:
     if isinstance(value, str):
-        return mask_text(value, state)
-
-    if isinstance(value, list):
-        return [mask_value(item, state) for item in value]
-
-    if isinstance(value, dict):
-        return {key: mask_value(item, state) for key, item in value.items()}
-
-    return value
-
-
-def mask_content_value(value: Any, state: MappingState) -> Any:
-    if isinstance(value, str):
-        return mask_text(value, state)
+        return mask_text(value, state, detector)
 
     if isinstance(value, list):
         masked_parts: list[Any] = []
         for item in value:
             if isinstance(item, str):
-                masked_parts.append(mask_text(item, state))
+                masked_parts.append(mask_text(item, state, detector))
                 continue
 
             if isinstance(item, dict):
@@ -125,7 +84,7 @@ def mask_content_value(value: Any, state: MappingState) -> Any:
                 for key in CONTENT_PART_TEXT_KEYS:
                     field_value = masked_part.get(key)
                     if isinstance(field_value, str):
-                        masked_part[key] = mask_text(field_value, state)
+                        masked_part[key] = mask_text(field_value, state, detector)
                 masked_parts.append(masked_part)
                 continue
 
@@ -135,21 +94,26 @@ def mask_content_value(value: Any, state: MappingState) -> Any:
     return value
 
 
-def mask_request_payload(payload: dict[str, Any], state: MappingState) -> dict[str, Any]:
+def mask_request_payload(
+    payload: dict[str, Any],
+    state: MappingState,
+    detector: Detector,
+) -> dict[str, Any]:
     masked_payload = copy.deepcopy(payload)
+    masked_payload.pop("session_id", None)
 
     messages = masked_payload.get("messages")
     if isinstance(messages, list):
         for message in messages:
             if isinstance(message, dict) and "content" in message:
-                message["content"] = mask_content_value(message.get("content"), state)
+                message["content"] = mask_content_value(message.get("content"), state, detector)
 
     prompt = masked_payload.get("prompt")
     if isinstance(prompt, str):
-        masked_payload["prompt"] = mask_text(prompt, state)
+        masked_payload["prompt"] = mask_text(prompt, state, detector)
     elif isinstance(prompt, list):
         masked_payload["prompt"] = [
-            mask_text(item, state) if isinstance(item, str) else item
+            mask_text(item, state, detector) if isinstance(item, str) else item
             for item in prompt
         ]
 
