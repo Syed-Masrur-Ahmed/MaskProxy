@@ -1,22 +1,11 @@
-FROM rust:1.82-slim AS builder
+FROM python:3.13-slim
 
 WORKDIR /app
 
-# Stub main so dependencies are cached independently of source changes
-RUN mkdir src && echo 'fn main() {}' > src/main.rs
-COPY Cargo.toml Cargo.lock* ./
-RUN cargo build --release 2>/dev/null || true
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
 
-# Build the real binary
-COPY src ./src
-RUN touch src/main.rs && cargo build --release
-
-# ---- runtime ----
-FROM debian:bookworm-slim
-
-WORKDIR /app
-COPY --from=builder /app/target/release/proxy .
-
+COPY . .
 EXPOSE 8080
 
-CMD ["./proxy"]
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8080"]

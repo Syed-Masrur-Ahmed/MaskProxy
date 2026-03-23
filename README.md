@@ -8,7 +8,7 @@ A privacy middleware layer that sits between your application and any LLM API. I
 |----------|------------------------------------------|------|
 | frontend | Next.js 15 developer dashboard           | 3000 |
 | backend  | FastAPI privacy config and control API   | 8000 |
-| proxy    | Rust reverse proxy (masking layer)       | 8080 |
+| proxy    | Python reverse proxy (behavioral spec)   | 8080 |
 | db       | PostgreSQL 16 — persistent config store  | 5433 |
 | cache    | Redis 8 — session state and PII mapping  | 6379 |
 
@@ -17,7 +17,7 @@ A privacy middleware layer that sits between your application and any LLM API. I
 - [Docker Desktop](https://www.docker.com/products/docker-desktop/) (includes Docker Compose)
 - Git
 
-No other tools need to be installed locally. Python, Node, and Rust all run inside containers.
+No other tools need to be installed locally. Python, Node, and the future Rust rewrite all run inside containers.
 
 ## Setup
 
@@ -42,7 +42,7 @@ For local development the default values work as-is. If you change `POSTGRES_PAS
 docker compose up --build
 ```
 
-The first build takes a few minutes — Docker is installing Python packages, Node modules, and compiling the Rust binary. Subsequent starts are faster.
+The first build takes a few minutes — Docker is installing Python packages and Node modules for local development. Subsequent starts are faster.
 
 **4. Open the dashboard**
 
@@ -76,7 +76,7 @@ docker compose down -v
 apps/
   frontend/   Next.js dashboard
   backend/    FastAPI config and control API
-  proxy/      Rust masking proxy
+  proxy/      Python masking proxy (Rust rewrite later)
 packages/     Shared code (future)
 docker-compose.yml
 .env.example

@@ -35,6 +35,13 @@ apps/proxy/target/
 
 # venv
 venv/
+.venv/
+apps/proxy/.venv/
 
 # fastapi
 __pycache__/
+
+# Local agent context (keep local only)
+AGENTS.md
+docs/current-sprint.md
+docs/person-a-workstream.md

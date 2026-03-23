@@ -87,14 +87,27 @@ services:
     networks:
       - maskproxy
 
-  # ── Rust proxy (placeholder) ────────────────────────────────────────────────
+  # ── Python proxy (behavioral spec for later Rust rewrite) ──────────────────
   proxy:
     build:
       context: apps/proxy
       dockerfile: Dockerfile
     restart: unless-stopped
+    command: ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8080", "--reload"]
+    env_file: .env
+    environment:
+      REDIS_URL: ${REDIS_URL}
+      UPSTREAM_BASE_URL: ${UPSTREAM_BASE_URL}
+      UPSTREAM_API_KEY: ${UPSTREAM_API_KEY}
+      MAPPING_TTL_SECONDS: ${MAPPING_TTL_SECONDS}
+      MAX_BODY_BYTES: ${MAX_BODY_BYTES}
+    volumes:
+      - ./apps/proxy:/app
     ports:
       - "8080:8080"
+    depends_on:
+      cache:
+        condition: service_healthy
     networks:
       - maskproxy
 
