@@ -104,6 +104,47 @@ def test_onnx_backend_supports_label_to_index_maps(tmp_path: Path) -> None:
     assert backend._id_to_label == {0: "O", 1: "B-PER"}
 
 
+def test_onnx_backend_merges_adjacent_b_tags_for_split_name_tokens() -> None:
+    text = "Hiroshi Tanaka"
+    encoding = FakeEncoding(
+        ids=[101, 1001, 1002, 1003, 1004, 102],
+        attention_mask=[1, 1, 1, 1, 1, 1],
+        offsets=[(0, 0), (0, 2), (2, 7), (8, 11), (11, 14), (0, 0)],
+        type_ids=[0, 0, 0, 0, 0, 0],
+    )
+    session = FakeSession(
+        [
+            [
+                [
+                    [9.0, 1.0],
+                    [1.0, 9.0],
+                    [1.0, 9.0],
+                    [1.0, 9.0],
+                    [1.0, 9.0],
+                    [9.0, 1.0],
+                ]
+            ]
+        ]
+    )
+
+    backend = OnnxTokenClassificationBackend(
+        model_path="model.onnx",
+        tokenizer_path="tokenizer.json",
+        labels_path="labels.json",
+        session=session,
+        tokenizer=FakeTokenizer(encoding),
+        label_loader=lambda _: {0: "O", 1: "B-PER"},
+    )
+
+    predictions = backend.predict(text)
+
+    assert len(predictions) == 1
+    assert predictions[0].start == 0
+    assert predictions[0].end == len(text)
+    assert predictions[0].label == "PER"
+    assert predictions[0].text == "Hiroshi Tanaka"
+
+
 def test_onnx_backend_skips_empty_text_without_invoking_session() -> None:
     session = FakeSession([[[0.0, 0.0]]])
     backend = OnnxTokenClassificationBackend(

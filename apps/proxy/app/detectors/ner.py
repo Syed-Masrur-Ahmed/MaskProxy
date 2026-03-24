@@ -9,11 +9,6 @@ DEFAULT_NER_LABEL_MAP: dict[str, str] = {
     "PER": "PERSON_NAME",
     "PERSON": "PERSON_NAME",
     "PERSON_NAME": "PERSON_NAME",
-    "LOC": "LOCATION",
-    "LOCATION": "LOCATION",
-    "GPE": "LOCATION",
-    "ORG": "ORGANIZATION",
-    "ORGANIZATION": "ORGANIZATION",
 }
 
 

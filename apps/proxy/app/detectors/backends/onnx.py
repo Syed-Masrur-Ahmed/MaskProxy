@@ -301,6 +301,9 @@ class OnnxTokenClassificationBackend:
         if parsed.prefix in {"I", "L", "E"}:
             return start >= current_end
 
+        if parsed.prefix == "B":
+            return start >= current_end and (start - current_end) <= 1
+
         if parsed.prefix == "":
             return start >= current_end and (start - current_end) <= 1
 

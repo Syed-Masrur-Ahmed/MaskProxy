@@ -274,20 +274,14 @@ def test_ner_detector_normalizes_labels_and_filters_by_confidence() -> None:
 
     matches = detector.detect(text)
 
+    # ORG is no longer in the default label map (NER frozen to PERSON_NAME only),
+    # so both ORG predictions are filtered out regardless of confidence.
     assert matches == [
         EntityMatch(
             start=0,
             end=10,
             kind="PERSON_NAME",
             value="John Smith",
-            priority=PRIORITY_NER,
-            source="ner",
-        ),
-        EntityMatch(
-            start=20,
-            end=29,
-            kind="ORGANIZATION",
-            value="Acme Corp",
             priority=PRIORITY_NER,
             source="ner",
         ),
