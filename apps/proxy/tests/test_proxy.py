@@ -8,6 +8,7 @@ from fastapi import FastAPI, Request
 from fastapi.responses import PlainTextResponse, Response
 
 from app.config import Settings
+from app.detectors import NerPrediction
 from app.main import create_app
 from app.masking import MappingState
 from app.session_store import InMemorySessionStore, SessionStoreError
@@ -32,6 +33,14 @@ class FailingSessionStore:
 
     async def close(self) -> None:
         return None
+
+
+class FakeNerBackend:
+    def __init__(self, predictions: list[NerPrediction]) -> None:
+        self._predictions = predictions
+
+    def predict(self, text: str) -> list[NerPrediction]:
+        return list(self._predictions)
 
 
 def build_settings(**overrides: Any) -> Settings:
@@ -98,6 +107,53 @@ async def test_masks_request_and_rehydrates_response() -> None:
         "Contact alice@example.com or 415-555-2671. SSN on file: 123-45-6789."
     )
     assert response.headers["x-session-id"] == "session-123"
+
+
+@pytest.mark.asyncio
+async def test_runtime_detector_factory_can_add_ner_masking() -> None:
+    captured: dict[str, Any] = {}
+    upstream = FastAPI()
+
+    @upstream.post("/v1/chat/completions")
+    async def upstream_chat(request: Request) -> dict[str, Any]:
+        captured["body"] = await request.json()
+        return {
+            "choices": [
+                {
+                    "message": {
+                        "content": "Hello <<MASK:PERSON_NAME_1:MASK>> at <<MASK:EMAIL_1:MASK>>"
+                    }
+                }
+            ]
+        }
+
+    app = create_app(
+        settings=build_settings(ner_enabled=True, ner_confidence_threshold=0.8),
+        session_store=SpySessionStore(),
+        upstream_transport=httpx.ASGITransport(app=upstream),
+        ner_backend=FakeNerBackend(
+            [NerPrediction(start=0, end=10, label="PER", score=0.97)]
+        ),
+    )
+
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://testserver") as client:
+        response = await client.post(
+            "/v1/chat/completions",
+            json={
+                "messages": [
+                    {
+                        "role": "user",
+                        "content": "John Smith email alice@example.com",
+                    }
+                ]
+            },
+        )
+
+    assert response.status_code == 200
+    assert captured["body"]["messages"][0]["content"] == (
+        "<<MASK:PERSON_NAME_1:MASK>> email <<MASK:EMAIL_1:MASK>>"
+    )
+    assert response.json()["choices"][0]["message"]["content"] == "Hello John Smith at alice@example.com"
 
 
 @pytest.mark.asyncio

@@ -6,10 +6,9 @@ from uuid import uuid4
 
 import httpx
 from fastapi import HTTPException, Request
-from fastapi.responses import JSONResponse
 
 from app.config import Settings
-from app.detectors import CompositeDetector, Detector, RegexDetector
+from app.detectors import Detector
 from app.masking import MappingState, mask_request_payload, rehydrate_value
 from app.session_store import SessionStore, SessionStoreError
 
@@ -34,7 +33,9 @@ class ProxyService:
     ) -> None:
         self._settings = settings
         self._session_store = session_store
-        self._detector = detector or CompositeDetector([RegexDetector()])
+        if detector is None:
+            raise ValueError("ProxyService requires an explicit detector.")
+        self._detector = detector
         self._client = httpx.AsyncClient(
             base_url=str(settings.upstream_base_url).rstrip("/"),
             timeout=30.0,

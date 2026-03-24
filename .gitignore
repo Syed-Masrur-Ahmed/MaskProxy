@@ -45,3 +45,14 @@ __pycache__/
 AGENTS.md
 docs/current-sprint.md
 docs/person-a-workstream.md
+
+# Local proxy model artifacts and one-off scripts
+apps/proxy/models/.DS_Store
+apps/proxy/models/*/.DS_Store
+apps/proxy/models/optimum-bert-base-NER/config.json
+apps/proxy/models/optimum-bert-base-NER/labels.json
+apps/proxy/models/optimum-bert-base-NER/model.onnx
+apps/proxy/models/optimum-bert-base-NER/tokenizer.json
+apps/proxy/scripts/generate_labels_from_config.py
+apps/proxy/scripts/run_ner_smoke.py
+apps/proxy/scripts/run_proxy_ner_e2e.py

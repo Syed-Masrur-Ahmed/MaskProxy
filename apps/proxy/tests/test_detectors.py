@@ -4,7 +4,10 @@ from dataclasses import dataclass
 
 from app.detectors import (
     CompositeDetector,
+    DEFAULT_NER_LABEL_MAP,
     EntityMatch,
+    NerDetector,
+    NerPrediction,
     PRIORITY_NER,
     PRIORITY_REGEX,
     RegexDetector,
@@ -19,6 +22,14 @@ class MockDetector:
 
     def detect(self, text: str) -> list[EntityMatch]:
         return list(self.matches)
+
+
+@dataclass
+class MockNerBackend:
+    predictions: list[NerPrediction]
+
+    def predict(self, text: str) -> list[NerPrediction]:
+        return list(self.predictions)
 
 
 def test_resolve_overlaps_prefers_longest_span_across_detectors() -> None:
@@ -246,3 +257,72 @@ def test_empty_text_detector_path_returns_no_matches_and_no_crash() -> None:
     detector = CompositeDetector([RegexDetector()])
 
     assert detector.detect("") == []
+
+
+def test_ner_detector_normalizes_labels_and_filters_by_confidence() -> None:
+    text = "John Smith works at Acme Corp"
+    detector = NerDetector(
+        backend=MockNerBackend(
+            [
+                NerPrediction(start=0, end=10, label="B-PER", score=0.98),
+                NerPrediction(start=20, end=29, label="ORG", score=0.61),
+                NerPrediction(start=20, end=29, label="ORG", score=0.94),
+            ]
+        ),
+        confidence_threshold=0.75,
+    )
+
+    matches = detector.detect(text)
+
+    assert matches == [
+        EntityMatch(
+            start=0,
+            end=10,
+            kind="PERSON_NAME",
+            value="John Smith",
+            priority=PRIORITY_NER,
+            source="ner",
+        ),
+        EntityMatch(
+            start=20,
+            end=29,
+            kind="ORGANIZATION",
+            value="Acme Corp",
+            priority=PRIORITY_NER,
+            source="ner",
+        ),
+    ]
+
+
+def test_ner_detector_ignores_unmapped_labels() -> None:
+    text = "Alpha beta"
+    detector = NerDetector(
+        backend=MockNerBackend(
+            [NerPrediction(start=0, end=5, label="MISC", score=0.99)]
+        ),
+        confidence_threshold=0.75,
+    )
+
+    assert detector.detect(text) == []
+
+
+def test_ner_detector_uses_offsets_as_source_of_truth_for_value() -> None:
+    text = "Jane Roe"
+    detector = NerDetector(
+        backend=MockNerBackend(
+            [NerPrediction(start=0, end=4, label="PER", score=0.99, text="Wrong")]
+        ),
+        confidence_threshold=0.75,
+        label_map=DEFAULT_NER_LABEL_MAP,
+    )
+
+    assert detector.detect(text) == [
+        EntityMatch(
+            start=0,
+            end=4,
+            kind="PERSON_NAME",
+            value="Jane",
+            priority=PRIORITY_NER,
+            source="ner",
+        )
+    ]

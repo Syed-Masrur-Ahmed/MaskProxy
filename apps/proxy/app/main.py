@@ -9,7 +9,7 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
 from app.config import Settings, get_settings
-from app.detectors import Detector
+from app.detectors import Detector, NerBackend, build_runtime_detector
 from app.proxy_service import ProxyService, UpstreamProxyError
 from app.session_store import RedisSessionStore, SessionStore
 
@@ -19,14 +19,16 @@ def create_app(
     session_store: SessionStore | None = None,
     upstream_transport: httpx.AsyncBaseTransport | None = None,
     detector: Detector | None = None,
+    ner_backend: NerBackend | None = None,
 ) -> FastAPI:
     resolved_settings = settings or get_settings()
     resolved_store = session_store or RedisSessionStore(resolved_settings.redis_url)
+    resolved_detector = detector or build_runtime_detector(resolved_settings, ner_backend=ner_backend)
     proxy_service = ProxyService(
         settings=resolved_settings,
         session_store=resolved_store,
         upstream_transport=upstream_transport,
-        detector=detector,
+        detector=resolved_detector,
     )
 
     @asynccontextmanager
