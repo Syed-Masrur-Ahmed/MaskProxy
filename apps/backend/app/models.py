@@ -31,3 +31,14 @@ class PrivacyConfigUpdate(SQLModel):
     mask_locations: Optional[bool] = None
     mask_finance: Optional[bool] = None
     threshold: Optional[float] = None
+
+
+class APIKey(SQLModel, table=True):
+    __tablename__ = "api_keys"
+
+    id: UUID = Field(default_factory=uuid.uuid4, primary_key=True)
+    user_id: UUID = Field(foreign_key="users.id", index=True)
+    name: str
+    key_peek: str  # last 4 chars of the raw key, for display
+    hashed_key: str = Field(index=True)
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
