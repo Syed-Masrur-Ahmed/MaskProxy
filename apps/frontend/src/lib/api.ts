@@ -38,3 +38,38 @@ export async function saveConfig(
   if (!res.ok) throw new Error(`Failed to save config: ${res.status}`);
   return res.json();
 }
+
+// ── API Keys ──────────────────────────────────────────────────────────────────
+
+export type APIKey = {
+  id: string;
+  name: string;
+  key_peek: string;
+  created_at: string;
+};
+
+export type APIKeyCreated = APIKey & { key: string };
+
+export async function listKeys(token: string): Promise<APIKey[]> {
+  const res = await fetch(`${BASE_URL}/keys`, { headers: authHeaders(token) });
+  if (!res.ok) throw new Error(`Failed to fetch keys: ${res.status}`);
+  return res.json();
+}
+
+export async function createKey(token: string, name: string): Promise<APIKeyCreated> {
+  const res = await fetch(`${BASE_URL}/keys`, {
+    method: "POST",
+    headers: authHeaders(token),
+    body: JSON.stringify({ name }),
+  });
+  if (!res.ok) throw new Error(`Failed to create key: ${res.status}`);
+  return res.json();
+}
+
+export async function revokeKey(token: string, keyId: string): Promise<void> {
+  const res = await fetch(`${BASE_URL}/keys/${keyId}`, {
+    method: "DELETE",
+    headers: authHeaders(token),
+  });
+  if (!res.ok) throw new Error(`Failed to revoke key: ${res.status}`);
+}
