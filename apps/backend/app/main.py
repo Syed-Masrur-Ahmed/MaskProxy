@@ -1,8 +1,13 @@
+import logging
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+import redis.asyncio as aioredis
+from fastapi import FastAPI, HTTPException
+
+logging.basicConfig(level=logging.INFO)
 from fastapi.middleware.cors import CORSMiddleware
 
+from app.cache import REDIS_URL, RedisDep
 from app.database import create_db_and_tables
 from app.routers import auth, config, api_keys
 
@@ -10,7 +15,9 @@ from app.routers import auth, config, api_keys
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     create_db_and_tables()
+    app.state.redis = aioredis.from_url(REDIS_URL, decode_responses=False)
     yield
+    await app.state.redis.aclose()
 
 
 app = FastAPI(title="MaskProxy", version="0.1.0", lifespan=lifespan)
@@ -25,3 +32,13 @@ app.add_middleware(
 app.include_router(auth.router)
 app.include_router(config.router)
 app.include_router(api_keys.router)
+
+
+@app.get("/test-redis")
+async def test_redis(redis: RedisDep) -> dict:
+    try:
+        await redis.set("test_key", "Redis is working!")
+        value = await redis.get("test_key")
+        return {"test_key": value.decode() if isinstance(value, bytes) else value}
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
