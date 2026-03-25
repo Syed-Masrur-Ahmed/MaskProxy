@@ -33,6 +33,17 @@ class PrivacyConfigUpdate(SQLModel):
     threshold: Optional[float] = None
 
 
+class ProviderKey(SQLModel, table=True):
+    __tablename__ = "provider_keys"
+
+    id: UUID = Field(default_factory=uuid.uuid4, primary_key=True)
+    user_id: UUID = Field(foreign_key="users.id", index=True)
+    provider_name: str  # e.g. 'OpenAI', 'Anthropic'
+    encrypted_key: bytes
+    key_peek: str  # last 4 chars of the raw key, for display
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+
 class APIKey(SQLModel, table=True):
     __tablename__ = "api_keys"
 

@@ -73,3 +73,40 @@ export async function revokeKey(token: string, keyId: string): Promise<void> {
   });
   if (!res.ok) throw new Error(`Failed to revoke key: ${res.status}`);
 }
+
+// ── Provider Keys (Vault) ──────────────────────────────────────────────────────
+
+export type ProviderKey = {
+  id: string;
+  provider_name: string;
+  key_peek: string;
+  created_at: string;
+};
+
+export async function listProviderKeys(token: string): Promise<ProviderKey[]> {
+  const res = await fetch(`${BASE_URL}/v1/provider-keys`, { headers: authHeaders(token) });
+  if (!res.ok) throw new Error(`Failed to fetch provider keys: ${res.status}`);
+  return res.json();
+}
+
+export async function addProviderKey(
+  token: string,
+  provider_name: string,
+  raw_key: string,
+): Promise<ProviderKey> {
+  const res = await fetch(`${BASE_URL}/v1/provider-keys`, {
+    method: "POST",
+    headers: authHeaders(token),
+    body: JSON.stringify({ provider_name, raw_key }),
+  });
+  if (!res.ok) throw new Error(`Failed to add provider key: ${res.status}`);
+  return res.json();
+}
+
+export async function deleteProviderKey(token: string, keyId: string): Promise<void> {
+  const res = await fetch(`${BASE_URL}/v1/provider-keys/${keyId}`, {
+    method: "DELETE",
+    headers: authHeaders(token),
+  });
+  if (!res.ok) throw new Error(`Failed to delete provider key: ${res.status}`);
+}

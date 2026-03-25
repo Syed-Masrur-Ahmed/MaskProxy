@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
-import { Shield, Activity, Settings, BarChart3, Key, GitBranch, LogOut } from "lucide-react";
+import { Shield, Activity, Settings, BarChart3, Key, GitBranch, LogOut, Vault } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Separator } from "@/components/ui/separator";
 import { useAuth } from "@/lib/auth";
@@ -12,6 +12,7 @@ const navItems = [
   { label: "Live Logs", href: "/logs", icon: Activity },
   { label: "Routing Rules", href: "/routing", icon: GitBranch },
   { label: "API Keys", href: "/keys", icon: Key },
+  { label: "Provider Vault", href: "/dashboard/provider-vault", icon: Vault },
   { label: "Settings", href: "/settings", icon: Settings },
 ];
 
