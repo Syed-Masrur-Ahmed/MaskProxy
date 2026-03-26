@@ -6,3 +6,41 @@ edition = "2021"
 [[bin]]
 name = "proxy"
 path = "src/main.rs"
+
+[dependencies]
+# Proxy framework
+pingora          = { version = "0.4", features = ["proxy"] }
+pingora-proxy    = "0.4"
+pingora-core     = "0.4"
+
+# Async runtime
+tokio            = { version = "1", features = ["full"] }
+async-trait      = "0.1"
+
+# HTTP client (forwarding masked requests to OpenAI)
+reqwest          = { version = "0.12", features = ["json", "stream"] }
+
+# JSON serialization / deserialization
+serde            = { version = "1", features = ["derive"] }
+serde_json       = "1"
+
+# Redis (session state + token map storage)
+redis            = { version = "0.25", features = ["tokio-comp", "connection-manager"] }
+
+# ONNX Runtime (GLiNER / DeBERTa-v3 PII model + BGE-Small-v1.5 embedding model)
+ort              = { version = "2", features = ["load-dynamic"] }
+
+# LanceDB (embedded vector store for semantic routing)
+lancedb          = "0.12"
+arrow-array      = "52"   # LanceDB uses Apache Arrow arrays as its data format
+
+# Unique session IDs per request
+uuid             = { version = "1", features = ["v4"] }
+
+# Error handling
+anyhow           = "1"
+thiserror        = "1"
+
+# Tracing / observability (Phase 3 — wired up early so spans are available)
+tracing          = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
