@@ -53,6 +53,10 @@ apps/proxy/models/optimum-bert-base-NER/config.json
 apps/proxy/models/optimum-bert-base-NER/labels.json
 apps/proxy/models/optimum-bert-base-NER/model.onnx
 apps/proxy/models/optimum-bert-base-NER/tokenizer.json
+apps/proxy/models/optimum-all-MiniLM-L6-v2/model.onnx
+apps/proxy/models/optimum-all-MiniLM-L6-v2/tokenizer.json
+models/optimum-all-MiniLM-L6-v2/model.onnx
+models/optimum-all-MiniLM-L6-v2/tokenizer.json
 apps/proxy/scripts/generate_labels_from_config.py
 apps/proxy/scripts/run_ner_smoke.py
 apps/proxy/scripts/run_proxy_ner_e2e.py

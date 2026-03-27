@@ -11,6 +11,8 @@ from fastapi.responses import JSONResponse
 from app.config import Settings, get_settings
 from app.detectors import Detector, NerBackend, build_runtime_detector
 from app.proxy_service import ProxyService, UpstreamProxyError
+from app.routing import EmbeddingProvider, RouteExampleStore, Router
+from app.routing.factory import build_router
 from app.session_store import RedisSessionStore, SessionStore
 
 
@@ -18,17 +20,28 @@ def create_app(
     settings: Settings | None = None,
     session_store: SessionStore | None = None,
     upstream_transport: httpx.AsyncBaseTransport | None = None,
+    local_upstream_transport: httpx.AsyncBaseTransport | None = None,
     detector: Detector | None = None,
     ner_backend: NerBackend | None = None,
+    router: Router | None = None,
+    semantic_embedding_provider: EmbeddingProvider | None = None,
+    semantic_route_store: RouteExampleStore | None = None,
 ) -> FastAPI:
     resolved_settings = settings or get_settings()
     resolved_store = session_store or RedisSessionStore(resolved_settings.redis_url)
     resolved_detector = detector or build_runtime_detector(resolved_settings, ner_backend=ner_backend)
+    resolved_router = router or build_router(
+        resolved_settings,
+        semantic_embedding_provider=semantic_embedding_provider,
+        semantic_route_store=semantic_route_store,
+    )
     proxy_service = ProxyService(
         settings=resolved_settings,
         session_store=resolved_store,
         upstream_transport=upstream_transport,
+        local_upstream_transport=local_upstream_transport,
         detector=resolved_detector,
+        router=resolved_router,
     )
 
     @asynccontextmanager
@@ -74,7 +87,8 @@ def create_app(
         except UpstreamProxyError as exc:
             return JSONResponse(content=exc.payload, status_code=exc.status_code)
 
-        return JSONResponse(content=response_payload, headers={"x-session-id": session_id})
+        headers = {"x-session-id": session_id} if session_id is not None else None
+        return JSONResponse(content=response_payload, headers=headers)
 
     return app
 

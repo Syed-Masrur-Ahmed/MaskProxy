@@ -9,8 +9,13 @@ from fastapi.responses import PlainTextResponse, Response
 
 from app.config import Settings
 from app.detectors import NerPrediction
+from app.detectors.regex import RegexDetector
 from app.main import create_app
 from app.masking import MappingState
+from app.proxy_service import ProxyService
+from app.routing.keyword import ConfigurableKeywordRouter
+from app.routing.semantic import InMemoryRouteExampleStore, RouteExample, SemanticRouter
+from app.routing.base import RouteTarget
 from app.session_store import InMemorySessionStore, SessionStoreError
 
 
@@ -43,12 +48,24 @@ class FakeNerBackend:
         return list(self._predictions)
 
 
+class FakeEmbeddingProvider:
+    def __init__(self, mapping: dict[str, list[float]]) -> None:
+        self._mapping = mapping
+
+    def embed(self, text: str) -> list[float]:
+        return list(self._mapping[text])
+
+
 def build_settings(**overrides: Any) -> Settings:
     values = {
         "redis_url": "redis://cache:6379/0",
         "upstream_base_url": "http://upstream.test",
+        "local_upstream_base_url": "",
         "mapping_ttl_seconds": 900,
         "max_body_bytes": 1_048_576,
+        "routing_enabled": False,
+        "routing_default_target": "cloud",
+        "routing_local_keywords": "",
     }
     values.update(overrides)
     return Settings(
@@ -154,6 +171,159 @@ async def test_runtime_detector_factory_can_add_ner_masking() -> None:
         "<<MASK:PERSON_NAME_1:MASK>> email <<MASK:EMAIL_1:MASK>>"
     )
     assert response.json()["choices"][0]["message"]["content"] == "Hello John Smith at alice@example.com"
+
+
+@pytest.mark.asyncio
+async def test_local_route_bypasses_masking_and_uses_local_upstream() -> None:
+    cloud_upstream = FastAPI()
+    local_captured: dict[str, Any] = {}
+    local_upstream = FastAPI()
+
+    @cloud_upstream.post("/v1/chat/completions")
+    async def cloud_chat(_: Request) -> dict[str, Any]:
+        pytest.fail("cloud upstream should not be used for local-routed traffic")
+
+    @local_upstream.post("/v1/chat/completions")
+    async def local_chat(request: Request) -> dict[str, Any]:
+        local_captured["body"] = await request.json()
+        return {"choices": [{"message": {"content": "Handled locally"}}]}
+
+    app = create_app(
+        settings=build_settings(
+            routing_enabled=True,
+            routing_local_keywords="medical,patient",
+            local_upstream_base_url="http://local-upstream.test",
+        ),
+        session_store=SpySessionStore(),
+        upstream_transport=httpx.ASGITransport(app=cloud_upstream),
+        local_upstream_transport=httpx.ASGITransport(app=local_upstream),
+    )
+
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://testserver") as client:
+        response = await client.post(
+            "/v1/chat/completions",
+            json={
+                "messages": [
+                    {
+                        "role": "user",
+                        "content": "Summarize this patient note for Alice Johnson at alice@example.com",
+                    }
+                ]
+            },
+        )
+
+    assert response.status_code == 200
+    assert local_captured["body"]["messages"][0]["content"] == (
+        "Summarize this patient note for Alice Johnson at alice@example.com"
+    )
+    assert response.json()["choices"][0]["message"]["content"] == "Handled locally"
+    assert "x-session-id" not in response.headers
+
+
+@pytest.mark.asyncio
+async def test_local_route_without_local_upstream_returns_503() -> None:
+    app = create_app(
+        settings=build_settings(
+            routing_enabled=True,
+            routing_local_keywords="medical",
+            local_upstream_base_url="",
+        ),
+        session_store=SpySessionStore(),
+    )
+
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://testserver") as client:
+        response = await client.post(
+            "/v1/chat/completions",
+            json={"messages": [{"role": "user", "content": "Summarize this medical note"}]},
+        )
+
+    assert response.status_code == 503
+    assert response.json()["detail"] == "Local route selected but no local upstream is configured."
+
+
+@pytest.mark.asyncio
+async def test_semantic_router_routes_to_local_upstream_without_masking() -> None:
+    cloud_upstream = FastAPI()
+    local_captured: dict[str, Any] = {}
+    local_upstream = FastAPI()
+
+    @cloud_upstream.post("/v1/chat/completions")
+    async def cloud_chat(_: Request) -> dict[str, Any]:
+        pytest.fail("cloud upstream should not be used for semantic local-routed traffic")
+
+    @local_upstream.post("/v1/chat/completions")
+    async def local_chat(request: Request) -> dict[str, Any]:
+        local_captured["body"] = await request.json()
+        return {"choices": [{"message": {"content": "Semantic local route"}}]}
+
+    provider = FakeEmbeddingProvider(
+        {
+            "Summarize this patient discharge note": [1.0, 0.0],
+            "General trivia question": [0.0, 1.0],
+            "Please summarize this patient discharge note for Alice Johnson at alice@example.com": [0.98, 0.02],
+        }
+    )
+    store = InMemoryRouteExampleStore(
+        [
+            RouteExample(text="Summarize this patient discharge note", target=RouteTarget.LOCAL),
+            RouteExample(text="General trivia question", target=RouteTarget.CLOUD),
+        ],
+        provider,
+    )
+    router = SemanticRouter(
+        embedding_provider=provider,
+        route_store=store,
+        similarity_threshold=0.8,
+    )
+
+    app = create_app(
+        settings=build_settings(
+            routing_enabled=True,
+            routing_strategy="semantic",
+            local_upstream_base_url="http://local-upstream.test",
+        ),
+        session_store=SpySessionStore(),
+        upstream_transport=httpx.ASGITransport(app=cloud_upstream),
+        local_upstream_transport=httpx.ASGITransport(app=local_upstream),
+        router=router,
+    )
+
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://testserver") as client:
+        response = await client.post(
+            "/v1/chat/completions",
+            json={
+                "messages": [
+                    {
+                        "role": "user",
+                        "content": "Please summarize this patient discharge note for Alice Johnson at alice@example.com",
+                    }
+                ]
+            },
+        )
+
+    assert response.status_code == 200
+    assert local_captured["body"]["messages"][0]["content"] == (
+        "Please summarize this patient discharge note for Alice Johnson at alice@example.com"
+    )
+    assert response.json()["choices"][0]["message"]["content"] == "Semantic local route"
+    assert "x-session-id" not in response.headers
+
+
+def test_warns_when_local_upstream_does_not_look_private(caplog: pytest.LogCaptureFixture) -> None:
+    caplog.set_level("WARNING")
+
+    service = ProxyService(
+        settings=build_settings(local_upstream_base_url="https://api.openai.com"),
+        session_store=SpySessionStore(),
+        detector=RegexDetector(),
+        router=ConfigurableKeywordRouter(local_keywords=[]),
+    )
+
+    assert "does not look local/private" in caplog.text
+
+    import asyncio
+
+    asyncio.run(service.close())
 
 
 @pytest.mark.asyncio
