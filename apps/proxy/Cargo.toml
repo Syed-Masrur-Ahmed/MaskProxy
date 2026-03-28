@@ -44,3 +44,6 @@ thiserror        = "1"
 # Tracing / observability (Phase 3 — wired up early so spans are available)
 tracing          = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# Hashing for API key authentication
+sha2             = "0.10"
