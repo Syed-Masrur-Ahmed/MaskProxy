@@ -3,8 +3,8 @@ use std::collections::HashMap;
 use anyhow::anyhow;
 use async_trait::async_trait;
 use bytes::Bytes;
-use pingora_core::{Error, ErrorType::*, Result};
 use pingora_core::upstreams::peer::HttpPeer;
+use pingora_core::{Error, ErrorType::*, Result};
 use pingora_http::ResponseHeader;
 use pingora_proxy::{ProxyHttp, Session};
 use reqwest::Client;
@@ -104,7 +104,10 @@ fn extract_prompt_text(body: &str) -> String {
 
     let mut fragments = Vec::new();
 
-    if let Some(messages) = payload.get("messages").and_then(serde_json::Value::as_array) {
+    if let Some(messages) = payload
+        .get("messages")
+        .and_then(serde_json::Value::as_array)
+    {
         for message in messages {
             if let Some(content) = message.get("content") {
                 collect_content_fragments(content, &mut fragments);
@@ -204,7 +207,9 @@ fn append_chunk_with_limit(buffer: &mut Vec<u8>, chunk: &[u8], limit: usize) -> 
     true
 }
 
-fn resolve_upstream(target: UpstreamTarget) -> std::result::Result<ResolvedUpstream, url::ParseError> {
+fn resolve_upstream(
+    target: UpstreamTarget,
+) -> std::result::Result<ResolvedUpstream, url::ParseError> {
     // The upstream base URL only contributes scheme/host/port. Pingora preserves
     // the downstream request URI, so callers must send the full path they want
     // upstream (for example `/v1/chat/completions`).
@@ -240,14 +245,20 @@ async fn send_json_error(session: &mut Session, status: u16, message: &str) -> R
         .map_err(|error| Error::because(InternalError, "failed to build error response", error))?;
     response
         .insert_header("content-type", "application/json")
-        .map_err(|error| Error::because(InternalError, "failed to set error content type", error))?;
+        .map_err(|error| {
+            Error::because(InternalError, "failed to set error content type", error)
+        })?;
 
     let body = Bytes::from(format!(r#"{{"error":"{}"}}"#, message));
     response
         .insert_header("content-length", body.len().to_string())
-        .map_err(|error| Error::because(InternalError, "failed to set error content length", error))?;
+        .map_err(|error| {
+            Error::because(InternalError, "failed to set error content length", error)
+        })?;
 
-    session.write_response_header(Box::new(response), false).await?;
+    session
+        .write_response_header(Box::new(response), false)
+        .await?;
     session.write_response_body(Some(body), true).await?;
     Ok(())
 }
@@ -266,7 +277,10 @@ impl MaskProxy {
 
         let response = self
             .http_client
-            .get(format!("{}/v1/provider-keys?provider={provider}", self.backend_api_url))
+            .get(format!(
+                "{}/v1/provider-keys?provider={provider}",
+                self.backend_api_url
+            ))
             .header("authorization", format!("Bearer {raw_proxy_key}"))
             .send()
             .await?;
@@ -348,7 +362,9 @@ impl ProxyHttp for MaskProxy {
             .downstream_session
             .read_request_body()
             .await
-            .map_err(|error| Error::because(ReadError, "failed reading downstream request body", error))?
+            .map_err(|error| {
+                Error::because(ReadError, "failed reading downstream request body", error)
+            })?
         {
             if !append_chunk_with_limit(&mut body, &chunk, MAX_REQUEST_BODY_BYTES) {
                 send_json_error(session, 413, "Request body too large").await?;
@@ -356,15 +372,14 @@ impl ProxyHttp for MaskProxy {
             }
         }
 
-        let body_text = String::from_utf8(body)
-            .map_err(|error| Error::because(InvalidHTTPHeader, "request body was not valid UTF-8", error))?;
+        let body_text = String::from_utf8(body).map_err(|error| {
+            Error::because(InvalidHTTPHeader, "request body was not valid UTF-8", error)
+        })?;
         let prompt = extract_prompt_text(&body_text);
 
-        let upstream = self
-            .router
-            .route(&prompt)
-            .await
-            .map_err(|error| Error::because(HTTPStatus(503), "failed to resolve upstream target", error))?;
+        let upstream = self.router.route(&prompt).await.map_err(|error| {
+            Error::because(HTTPStatus(503), "failed to resolve upstream target", error)
+        })?;
         let mut resolved = resolve_upstream(upstream.clone())
             .map_err(|error| Error::because(InternalError, "invalid upstream URL", error))?;
 
@@ -376,7 +391,8 @@ impl ProxyHttp for MaskProxy {
                 {
                     Ok(key) => key,
                     Err(error) => {
-                        let _ = send_json_error(session, 502, "Failed to resolve provider key").await;
+                        let _ =
+                            send_json_error(session, 502, "Failed to resolve provider key").await;
                         tracing::error!("failed to resolve provider key: {error}");
                         return Ok(true);
                     }
@@ -384,22 +400,33 @@ impl ProxyHttp for MaskProxy {
 
                 if should_override_cloud_upstream(&current_cloud_url) {
                     if let Some(provider_url) = provider_base_url(&ctx.provider) {
-                        resolved = resolve_upstream(UpstreamTarget::Cloud(provider_url.to_string()))
-                            .map_err(|error| Error::because(InternalError, "invalid provider base URL", error))?;
+                        resolved =
+                            resolve_upstream(UpstreamTarget::Cloud(provider_url.to_string()))
+                                .map_err(|error| {
+                                    Error::because(
+                                        InternalError,
+                                        "invalid provider base URL",
+                                        error,
+                                    )
+                                })?;
                     }
                 }
 
-                let masked = self
-                    .masker
-                    .mask(&body_text)
-                    .await
-                    .map_err(|error| Error::because(InternalError, "failed to mask request body", error))?;
+                let masked = self.masker.mask(&body_text).await.map_err(|error| {
+                    Error::because(InternalError, "failed to mask request body", error)
+                })?;
 
                 if !masked.token_map.is_empty() {
                     self.redis
                         .save_mapping(&ctx.session_id, &masked.token_map, MAPPING_TTL_SECONDS)
                         .await
-                        .map_err(|error| Error::because(InternalError, "failed to persist session mapping", error))?;
+                        .map_err(|error| {
+                            Error::because(
+                                InternalError,
+                                "failed to persist session mapping",
+                                error,
+                            )
+                        })?;
                 }
 
                 ctx.provider_api_key = Some(provider_api_key);
@@ -420,10 +447,9 @@ impl ProxyHttp for MaskProxy {
         _session: &mut Session,
         ctx: &mut Self::CTX,
     ) -> Result<Box<HttpPeer>> {
-        let resolved = ctx
-            .upstream
-            .clone()
-            .ok_or_else(|| Error::explain(InternalError, "request_filter did not resolve an upstream"))?;
+        let resolved = ctx.upstream.clone().ok_or_else(|| {
+            Error::explain(InternalError, "request_filter did not resolve an upstream")
+        })?;
         let peer = Box::new(HttpPeer::new(
             resolved.address.as_str(),
             resolved.tls,
@@ -444,7 +470,9 @@ impl ProxyHttp for MaskProxy {
         if let Some(upstream) = &ctx.upstream {
             upstream_request
                 .insert_header("Host", upstream.host.clone())
-                .map_err(|error| Error::because(InternalError, "failed to set Host header", error))?;
+                .map_err(|error| {
+                    Error::because(InternalError, "failed to set Host header", error)
+                })?;
         }
         upstream_request.remove_header("authorization");
         upstream_request.remove_header("x-api-key");
@@ -454,20 +482,40 @@ impl ProxyHttp for MaskProxy {
                 "anthropic" => {
                     upstream_request
                         .insert_header("x-api-key", provider_api_key.clone())
-                        .map_err(|error| Error::because(InternalError, "failed to set Anthropic key header", error))?;
+                        .map_err(|error| {
+                            Error::because(
+                                InternalError,
+                                "failed to set Anthropic key header",
+                                error,
+                            )
+                        })?;
                     upstream_request
                         .insert_header("anthropic-version", "2023-06-01")
-                        .map_err(|error| Error::because(InternalError, "failed to set Anthropic version header", error))?;
+                        .map_err(|error| {
+                            Error::because(
+                                InternalError,
+                                "failed to set Anthropic version header",
+                                error,
+                            )
+                        })?;
                 }
                 "gemini" => {
                     upstream_request
                         .insert_header("x-goog-api-key", provider_api_key.clone())
-                        .map_err(|error| Error::because(InternalError, "failed to set Gemini key header", error))?;
+                        .map_err(|error| {
+                            Error::because(InternalError, "failed to set Gemini key header", error)
+                        })?;
                 }
                 _ => {
                     upstream_request
                         .insert_header("authorization", format!("Bearer {provider_api_key}"))
-                        .map_err(|error| Error::because(InternalError, "failed to set OpenAI authorization header", error))?;
+                        .map_err(|error| {
+                            Error::because(
+                                InternalError,
+                                "failed to set OpenAI authorization header",
+                                error,
+                            )
+                        })?;
                 }
             }
         }
@@ -475,7 +523,9 @@ impl ProxyHttp for MaskProxy {
             upstream_request.remove_header("Content-Length");
             upstream_request
                 .insert_header("Content-Length", body.len().to_string())
-                .map_err(|error| Error::because(InternalError, "failed to set Content-Length header", error))?;
+                .map_err(|error| {
+                    Error::because(InternalError, "failed to set Content-Length header", error)
+                })?;
         }
         Ok(())
     }
@@ -534,7 +584,8 @@ impl ProxyHttp for MaskProxy {
         }
 
         if let Some(chunk) = body.take() {
-            if !append_chunk_with_limit(&mut ctx.response_buffer, &chunk, MAX_RESPONSE_BUFFER_BYTES) {
+            if !append_chunk_with_limit(&mut ctx.response_buffer, &chunk, MAX_RESPONSE_BUFFER_BYTES)
+            {
                 return Err(Error::explain(
                     InternalError,
                     "upstream response exceeded buffer limit",
@@ -557,113 +608,5 @@ impl ProxyHttp for MaskProxy {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::{
-        append_chunk_with_limit, extract_prompt_text, infer_provider, provider_base_url,
-        resolve_upstream, sha256_hex,
-        should_override_cloud_upstream,
-        UpstreamTarget,
-    };
-
-    #[test]
-    fn extract_prompt_text_collects_messages_and_prompt_fragments() {
-        let body = serde_json::json!({
-            "messages": [
-                {"content": "hello"},
-                {"content": [{"text": "world"}]}
-            ],
-            "prompt": ["from", "proxy"]
-        });
-
-        let extracted = extract_prompt_text(&body.to_string());
-
-        assert_eq!(extracted, "hello\nworld\nfrom\nproxy");
-    }
-
-    #[test]
-    fn infer_provider_uses_current_model_family_prefixes() {
-        assert_eq!(infer_provider("gpt-4o"), "openai");
-        assert_eq!(infer_provider("o1-preview"), "openai");
-        assert_eq!(infer_provider("o3-mini"), "openai");
-        assert_eq!(infer_provider("claude-3-5-sonnet"), "anthropic");
-        assert_eq!(infer_provider("gemini-2.0-flash"), "gemini");
-    }
-
-    #[test]
-    fn provider_base_url_returns_expected_public_hosts() {
-        assert_eq!(provider_base_url("openai"), Some("https://api.openai.com"));
-        assert_eq!(provider_base_url("anthropic"), Some("https://api.anthropic.com"));
-        assert_eq!(
-            provider_base_url("gemini"),
-            Some("https://generativelanguage.googleapis.com")
-        );
-        assert_eq!(provider_base_url("unknown"), None);
-    }
-
-    #[test]
-    fn override_cloud_upstream_only_for_known_public_provider_hosts() {
-        assert!(should_override_cloud_upstream("https://api.openai.com/v1/chat/completions"));
-        assert!(should_override_cloud_upstream("https://api.anthropic.com/v1/messages"));
-        assert!(!should_override_cloud_upstream("http://127.0.0.1:18081/v1/chat/completions"));
-        assert!(!should_override_cloud_upstream("http://localhost:8088/v1/chat/completions"));
-        assert!(!should_override_cloud_upstream("https://example.internal/v1/chat/completions"));
-    }
-
-    #[test]
-    fn proxy_key_hashing_uses_full_maskproxy_key() {
-        assert_ne!(sha256_hex("mp_test_key"), sha256_hex("test_key"));
-    }
-
-    #[test]
-    fn extract_prompt_text_collects_message_content_and_prompt() {
-        let body = r#"{
-            "messages": [
-                {"role": "user", "content": "Summarize this patient note"},
-                {"role": "assistant", "content": [{"type": "text", "text": "Draft reply"}]}
-            ],
-            "prompt": ["Classify this as urgent"]
-        }"#;
-
-        let extracted = extract_prompt_text(body);
-
-        assert!(extracted.contains("Summarize this patient note"));
-        assert!(extracted.contains("Draft reply"));
-        assert!(extracted.contains("Classify this as urgent"));
-    }
-
-    #[test]
-    fn extract_prompt_text_returns_empty_string_for_invalid_json() {
-        assert_eq!(extract_prompt_text("not-json"), "");
-    }
-
-    #[test]
-    fn resolve_upstream_parses_https_target() {
-        let resolved =
-            resolve_upstream(UpstreamTarget::Cloud("https://api.openai.com/v1/chat/completions".into()))
-                .expect("upstream should parse");
-
-        assert_eq!(resolved.address, "api.openai.com:443");
-        assert_eq!(resolved.host, "api.openai.com");
-        assert!(resolved.tls);
-    }
-
-    #[test]
-    fn append_chunk_with_limit_accepts_chunk_within_limit() {
-        let mut buffer = b"abc".to_vec();
-
-        let appended = append_chunk_with_limit(&mut buffer, b"def", 6);
-
-        assert!(appended);
-        assert_eq!(buffer, b"abcdef");
-    }
-
-    #[test]
-    fn append_chunk_with_limit_rejects_chunk_beyond_limit() {
-        let mut buffer = b"abc".to_vec();
-
-        let appended = append_chunk_with_limit(&mut buffer, b"def", 5);
-
-        assert!(!appended);
-        assert_eq!(buffer, b"abc");
-    }
-}
+#[path = "proxy_tests.rs"]
+mod tests;
