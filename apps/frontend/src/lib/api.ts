@@ -2,6 +2,48 @@
 // Works both in Docker and local dev without any env var in the browser.
 const BASE_URL = "/api";
 
+// ── User Management ───────────────────────────────────────────────────────────
+
+export type UserProfile = {
+  email: string;
+  created_at: string;
+};
+
+export async function getMe(token: string): Promise<UserProfile> {
+  const res = await fetch(`${BASE_URL}/users/me`, { headers: authHeaders(token) });
+  if (!res.ok) throw new Error(`Failed to fetch profile: ${res.status}`);
+  return res.json();
+}
+
+export async function updateEmail(token: string, email: string): Promise<UserProfile> {
+  const res = await fetch(`${BASE_URL}/users/me`, {
+    method: "PATCH",
+    headers: authHeaders(token),
+    body: JSON.stringify({ email }),
+  });
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}));
+    throw new Error(body.detail ?? `Failed to update email: ${res.status}`);
+  }
+  return res.json();
+}
+
+export async function updatePassword(
+  token: string,
+  current_password: string,
+  new_password: string,
+): Promise<void> {
+  const res = await fetch(`${BASE_URL}/users/me/password`, {
+    method: "PATCH",
+    headers: authHeaders(token),
+    body: JSON.stringify({ current_password, new_password }),
+  });
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}));
+    throw new Error(body.detail ?? `Failed to update password: ${res.status}`);
+  }
+}
+
 export type PrivacyConfig = {
   mask_names: boolean;
   mask_locations: boolean;
