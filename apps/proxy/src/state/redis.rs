@@ -1,27 +1,80 @@
-// state/redis.rs
-// Redis connection pool and token mapping storage.
-// Uses the `redis` crate with async Tokio support.
-//
-// Responsibilities:
-//   - Maintain a connection pool (bb8 or deadpool) for concurrent access
-//   - Store PII token maps scoped to a session ID with a TTL
-//   - Retrieve token maps during response rehydration
-//
-// Key schema:
-//   "{session_id}:{token}"  →  real value   TTL: 300s (5 minutes)
-//   e.g. "abc123:PERSON_1"  →  "John Smith"
-//
-// Session ID is generated per request (UUID v4) and stored in RequestContext.
-// TTL ensures mappings are cleaned up even if rehydration never fires
-// (e.g. request errors out before response arrives).
+use std::collections::HashMap;
 
-// TODO: define RedisPool type alias (bb8::Pool<redis::Client> or similar)
-// TODO: define RedisState struct (wraps the pool)
-// TODO: impl RedisState
-//   - async fn new(redis_url: &str) -> Result<Self>   (build connection pool)
-//   - async fn store_token_map(session_id: &str, token_map: &HashMap<String, String>, ttl_secs: u64) -> Result<()>
-//       - for each (token, real_value) in map: SET "{session_id}:{token}" real_value EX ttl
-//   - async fn get_token_map(session_id: &str, tokens: &[String]) -> Result<HashMap<String, String>>
-//       - MGET all "{session_id}:{token}" keys
-//       - return as HashMap
-//   - async fn delete_session(session_id: &str) -> Result<()>   (optional cleanup)
+use anyhow::Result;
+use redis::{AsyncCommands, Client};
+
+#[derive(Clone)]
+pub struct RedisState {
+    client: Client,
+    key_prefix: String,
+}
+
+impl RedisState {
+    pub async fn new(redis_url: &str) -> Result<Self> {
+        let client = Client::open(redis_url)?;
+        Ok(Self {
+            client,
+            key_prefix: "maskproxy:session".to_string(),
+        })
+    }
+
+    pub async fn save_mapping(
+        &self,
+        session_id: &str,
+        mapping: &HashMap<String, String>,
+        ttl_secs: u64,
+    ) -> Result<()> {
+        let mut connection = self.client.get_multiplexed_tokio_connection().await?;
+        let payload = serde_json::to_string(mapping)?;
+        let _: () = connection
+            .set_ex(self.key(session_id), payload, ttl_secs)
+            .await?;
+        Ok(())
+    }
+
+    pub async fn get_value(&self, key: &str) -> Result<Option<String>> {
+        let mut connection = self.client.get_multiplexed_tokio_connection().await?;
+        let value: Option<String> = connection.get(key).await?;
+        Ok(value)
+    }
+
+    pub async fn set_value(&self, key: &str, value: &str, ttl_secs: u64) -> Result<()> {
+        let mut connection = self.client.get_multiplexed_tokio_connection().await?;
+        let _: () = connection.set_ex(key, value, ttl_secs).await?;
+        Ok(())
+    }
+
+    pub async fn get_mapping(&self, session_id: &str) -> Result<HashMap<String, String>> {
+        let mut connection = self.client.get_multiplexed_tokio_connection().await?;
+        let payload: Option<String> = connection.get(self.key(session_id)).await?;
+
+        match payload {
+            Some(payload) => Ok(serde_json::from_str(&payload)?),
+            None => Ok(HashMap::new()),
+        }
+    }
+
+    pub async fn delete_session(&self, session_id: &str) -> Result<()> {
+        let mut connection = self.client.get_multiplexed_tokio_connection().await?;
+        let _: usize = connection.del(self.key(session_id)).await?;
+        Ok(())
+    }
+
+    fn key(&self, session_id: &str) -> String {
+        session_key(&self.key_prefix, session_id)
+    }
+}
+
+fn session_key(key_prefix: &str, session_id: &str) -> String {
+    format!("{}:{}", key_prefix, session_id)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::session_key;
+
+    #[test]
+    fn redis_key_uses_session_prefix() {
+        assert_eq!(session_key("maskproxy:session", "abc123"), "maskproxy:session:abc123");
+    }
+}
