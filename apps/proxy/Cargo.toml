@@ -29,8 +29,10 @@ sha2             = "0.10"
 rustls           = { version = "0.23", features = ["ring"] }
 ort              = { version = "2.0.0-rc.12", features = ["load-dynamic", "ndarray"] }
 tokenizers       = "0.20"
+futures          = "0.3"
 lancedb          = "0.12"
 arrow-array      = "52"
+arrow-schema     = "52"
 
 # Redis (session state + token map storage)
 redis            = { version = "0.25", features = ["tokio-comp", "connection-manager"] }
@@ -46,3 +48,5 @@ thiserror        = "1"
 tracing          = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
+[patch.crates-io]
+lance = { path = "vendor/lance" }
