@@ -1,7 +1,43 @@
 use super::{
     append_chunk_with_limit, extract_prompt_text, infer_provider, provider_base_url,
-    resolve_upstream, sha256_hex, should_override_cloud_upstream, UpstreamTarget,
+    resolve_upstream, sha256_hex, should_override_cloud_upstream, MaskProxy, UpstreamTarget,
 };
+use anyhow::Result;
+use async_trait::async_trait;
+use crate::masker::ner::NER;
+use crate::router::{EmbeddingProvider, RouteTarget, Router, SemanticRouteStore};
+use crate::state::lancedb::RouteMatch;
+use crate::state::redis::RedisState;
+
+#[derive(Clone)]
+struct FakeEmbeddingProvider {
+    embedding: Vec<f32>,
+}
+
+impl EmbeddingProvider for FakeEmbeddingProvider {
+    fn embed(&self, _text: &str) -> Result<Vec<f32>> {
+        Ok(self.embedding.clone())
+    }
+}
+
+#[derive(Clone)]
+struct FakeRouteStore {
+    matches: Vec<RouteMatch>,
+}
+
+#[async_trait]
+impl SemanticRouteStore for FakeRouteStore {
+    async fn query(&self, _embedding: &[f32], limit: usize) -> Result<Vec<RouteMatch>> {
+        Ok(self.matches.iter().take(limit).cloned().collect())
+    }
+}
+
+async fn build_test_proxy(router: Router) -> MaskProxy {
+    let redis = RedisState::new("redis://127.0.0.1:6379")
+        .await
+        .expect("redis client should construct without connecting");
+    MaskProxy::new(redis, NER::disabled(), router)
+}
 
 #[test]
 fn extract_prompt_text_collects_messages_and_prompt_fragments() {
@@ -117,4 +153,80 @@ fn append_chunk_with_limit_rejects_chunk_beyond_limit() {
 
     assert!(!appended);
     assert_eq!(buffer, b"abc");
+}
+
+#[tokio::test]
+async fn semantic_local_prepare_request_keeps_original_body() {
+    let router = Router::with_semantic(
+        "https://api.openai.com",
+        Some("http://localhost:8001".to_string()),
+        std::sync::Arc::new(FakeEmbeddingProvider {
+            embedding: vec![1.0, 0.0],
+        }),
+        std::sync::Arc::new(FakeRouteStore {
+            matches: vec![RouteMatch {
+                text: "patient note".to_string(),
+                target: RouteTarget::Local,
+                score: 0.95,
+            }],
+        }),
+        0.8,
+        RouteTarget::Cloud,
+        3,
+    );
+    let proxy = build_test_proxy(router).await;
+    let body = serde_json::json!({
+        "messages": [{"role": "user", "content": "Call Alice at 415-555-1234"}]
+    })
+    .to_string();
+
+    let prepared = proxy.prepare_request(&body).await.unwrap();
+
+    assert_eq!(
+        prepared.upstream,
+        UpstreamTarget::Local("http://localhost:8001".to_string())
+    );
+    assert_eq!(prepared.request_body, bytes::Bytes::from(body.clone()));
+    assert!(prepared.token_map.is_empty());
+    assert!(String::from_utf8_lossy(&prepared.request_body).contains("415-555-1234"));
+}
+
+#[tokio::test]
+async fn semantic_cloud_prepare_request_masks_body() {
+    let router = Router::with_semantic(
+        "https://api.openai.com",
+        Some("http://localhost:8001".to_string()),
+        std::sync::Arc::new(FakeEmbeddingProvider {
+            embedding: vec![0.0, 1.0],
+        }),
+        std::sync::Arc::new(FakeRouteStore {
+            matches: vec![RouteMatch {
+                text: "general trivia".to_string(),
+                target: RouteTarget::Cloud,
+                score: 0.96,
+            }],
+        }),
+        0.8,
+        RouteTarget::Cloud,
+        3,
+    );
+    let proxy = build_test_proxy(router).await;
+    let body = serde_json::json!({
+        "messages": [{"role": "user", "content": "Email alice@example.com"}]
+    })
+    .to_string();
+
+    let prepared = proxy.prepare_request(&body).await.unwrap();
+    let prepared_text = String::from_utf8_lossy(&prepared.request_body);
+
+    assert_eq!(
+        prepared.upstream,
+        UpstreamTarget::Cloud("https://api.openai.com".to_string())
+    );
+    assert!(prepared_text.contains("<<MASK:EMAIL_1:MASK>>"));
+    assert!(!prepared_text.contains("alice@example.com"));
+    assert_eq!(
+        prepared.token_map.get("<<MASK:EMAIL_1:MASK>>"),
+        Some(&"alice@example.com".to_string())
+    );
 }

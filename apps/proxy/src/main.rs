@@ -14,6 +14,7 @@ use pingora_core::server::configuration::Opt;
 use pingora_core::server::Server;
 use pingora_proxy::http_proxy_service;
 use rustls::crypto::ring::default_provider;
+use url::Url;
 
 use crate::masker::ner::NER;
 use crate::proxy::MaskProxy;
@@ -151,6 +152,67 @@ fn semantic_routing_enabled(config: &ProxyConfig) -> bool {
     config.routing_enabled && config.routing_strategy.eq_ignore_ascii_case("semantic")
 }
 
+fn ensure_semantic_routing_paths_exist(
+    model_path: &Path,
+    tokenizer_path: &Path,
+    examples_path: &Path,
+) -> Result<()> {
+    ensure!(
+        model_path.is_file(),
+        "semantic routing model file not found: {}",
+        model_path.display()
+    );
+    ensure!(
+        tokenizer_path.is_file(),
+        "semantic routing tokenizer file not found: {}",
+        tokenizer_path.display()
+    );
+    ensure!(
+        examples_path.is_file(),
+        "semantic routing examples file not found: {}",
+        examples_path.display()
+    );
+    Ok(())
+}
+
+fn is_likely_local_upstream(url: &str) -> bool {
+    let Ok(parsed) = Url::parse(url) else {
+        return false;
+    };
+
+    let Some(host) = parsed.host_str() else {
+        return false;
+    };
+
+    if host.eq_ignore_ascii_case("localhost") || host.eq_ignore_ascii_case("host.docker.internal") {
+        return true;
+    }
+
+    if host.eq_ignore_ascii_case("::1") || host.eq_ignore_ascii_case("[::1]") {
+        return true;
+    }
+
+    if host.ends_with(".local") {
+        return true;
+    }
+
+    let segments: Vec<_> = host.split('.').collect();
+    if segments.len() != 4 {
+        return false;
+    }
+
+    let octets: Option<Vec<u8>> = segments
+        .iter()
+        .map(|segment| segment.parse::<u8>().ok())
+        .collect();
+    let Some(octets) = octets else {
+        return false;
+    };
+
+    matches!(octets.as_slice(), [127, ..] | [10, ..] | [192, 168, ..])
+        || (octets[0] == 172 && (16..=31).contains(&octets[1]))
+}
+
 async fn build_router(config: &ProxyConfig) -> Result<Router> {
     let default_target = route_target_from_env(&config.routing_default_target);
 
@@ -177,6 +239,16 @@ async fn build_router(config: &ProxyConfig) -> Result<Router> {
     let model_path = Path::new(&config.routing_embedding_model_path);
     let tokenizer_path = Path::new(&config.routing_embedding_tokenizer_path);
     let examples_path = Path::new(&config.routing_examples_path);
+    ensure_semantic_routing_paths_exist(model_path, tokenizer_path, examples_path)?;
+
+    if let Some(local_upstream) = &config.local_upstream_base_url {
+        if !is_likely_local_upstream(local_upstream) {
+            tracing::warn!(
+                local_upstream = %local_upstream,
+                "semantic local routing is enabled, but LOCAL_UPSTREAM_BASE_URL does not look local/private"
+            );
+        }
+    }
 
     let embedding_provider = Arc::new(OnnxTextEmbeddingProvider::new(model_path, tokenizer_path)?);
     let route_examples = load_route_examples(examples_path)?;
@@ -297,3 +369,7 @@ fn main() -> Result<()> {
     tracing::info!("MaskProxy listening on 0.0.0.0:{}", config.port);
     server.run_forever();
 }
+
+#[cfg(test)]
+#[path = "main_tests.rs"]
+mod tests;

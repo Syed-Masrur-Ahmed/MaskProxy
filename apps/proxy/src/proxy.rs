@@ -52,6 +52,12 @@ pub struct ResolvedUpstream {
     tls: bool,
 }
 
+struct PreparedRequest {
+    upstream: UpstreamTarget,
+    request_body: Bytes,
+    token_map: HashMap<String, String>,
+}
+
 #[derive(Clone)]
 pub struct MaskProxy {
     pub redis: RedisState,
@@ -89,6 +95,27 @@ impl MaskProxy {
     pub fn create_ctx(&self) -> RequestContext {
         let _ = self;
         RequestContext::new()
+    }
+
+    async fn prepare_request(&self, body_text: &str) -> anyhow::Result<PreparedRequest> {
+        let prompt = extract_prompt_text(body_text);
+        let upstream = self.router.route(&prompt).await?;
+
+        match upstream.clone() {
+            UpstreamTarget::Cloud(_) => {
+                let masked = self.masker.mask(body_text).await?;
+                Ok(PreparedRequest {
+                    upstream,
+                    request_body: Bytes::from(masked.masked_body),
+                    token_map: masked.token_map,
+                })
+            }
+            UpstreamTarget::Local(_) => Ok(PreparedRequest {
+                upstream,
+                request_body: Bytes::from(body_text.to_string()),
+                token_map: HashMap::new(),
+            }),
+        }
     }
 }
 
@@ -375,15 +402,14 @@ impl ProxyHttp for MaskProxy {
         let body_text = String::from_utf8(body).map_err(|error| {
             Error::because(InvalidHTTPHeader, "request body was not valid UTF-8", error)
         })?;
-        let prompt = extract_prompt_text(&body_text);
 
-        let upstream = self.router.route(&prompt).await.map_err(|error| {
-            Error::because(HTTPStatus(503), "failed to resolve upstream target", error)
+        let prepared = self.prepare_request(&body_text).await.map_err(|error| {
+            Error::because(HTTPStatus(503), "failed to prepare upstream request", error)
         })?;
-        let mut resolved = resolve_upstream(upstream.clone())
+        let mut resolved = resolve_upstream(prepared.upstream.clone())
             .map_err(|error| Error::because(InternalError, "invalid upstream URL", error))?;
 
-        match upstream {
+        match prepared.upstream {
             UpstreamTarget::Cloud(current_cloud_url) => {
                 let provider_api_key = match self
                     .resolve_provider_key(&user_id, &ctx.provider, &raw_proxy_key)
@@ -412,13 +438,9 @@ impl ProxyHttp for MaskProxy {
                     }
                 }
 
-                let masked = self.masker.mask(&body_text).await.map_err(|error| {
-                    Error::because(InternalError, "failed to mask request body", error)
-                })?;
-
-                if !masked.token_map.is_empty() {
+                if !prepared.token_map.is_empty() {
                     self.redis
-                        .save_mapping(&ctx.session_id, &masked.token_map, MAPPING_TTL_SECONDS)
+                        .save_mapping(&ctx.session_id, &prepared.token_map, MAPPING_TTL_SECONDS)
                         .await
                         .map_err(|error| {
                             Error::because(
@@ -430,11 +452,11 @@ impl ProxyHttp for MaskProxy {
                 }
 
                 ctx.provider_api_key = Some(provider_api_key);
-                ctx.token_map = masked.token_map;
-                ctx.request_body = Some(Bytes::from(masked.masked_body));
+                ctx.token_map = prepared.token_map;
+                ctx.request_body = Some(prepared.request_body);
             }
             UpstreamTarget::Local(_) => {
-                ctx.request_body = Some(Bytes::from(body_text));
+                ctx.request_body = Some(prepared.request_body);
             }
         }
 
