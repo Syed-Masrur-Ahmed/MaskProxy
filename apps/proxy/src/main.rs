@@ -7,9 +7,11 @@ mod state;
 use std::env;
 
 use anyhow::Result;
-use pingora::proxy::http_proxy_service;
-use pingora::server::Server;
-use pingora::server::configuration::Opt;
+use clap::Parser;
+use pingora_core::server::configuration::Opt;
+use pingora_core::server::Server;
+use pingora_proxy::http_proxy_service;
+use rustls::crypto::ring::default_provider;
 
 use crate::masker::ner::NER;
 use crate::proxy::MaskProxy;
@@ -25,8 +27,10 @@ pub struct ProxyConfig {
     pub redis_url: String,
     pub api_backend_url: String,
     pub ner_model_path: String,
-    pub embedding_model_path: String,
-    pub lancedb_path: String,
+    pub cloud_upstream_base_url: String,
+    pub local_upstream_base_url: Option<String>,
+    pub routing_local_keywords: Vec<String>,
+    pub routing_default_target: String,
     pub log_level: String,
 }
 
@@ -40,18 +44,36 @@ impl ProxyConfig {
             redis_url: env::var("REDIS_URL")
                 .unwrap_or_else(|_| "redis://localhost:6379".to_string()),
 
-            // FastAPI backend — used when provider key is not in Redis cache
             api_backend_url: env::var("API_BACKEND_URL")
                 .unwrap_or_else(|_| "http://localhost:8000".to_string()),
 
             ner_model_path: env::var("NER_MODEL_PATH")
-                .expect("NER_MODEL_PATH is required (path to GLiNER ONNX file)"),
+                .unwrap_or_default(),
 
-            embedding_model_path: env::var("EMBEDDING_MODEL_PATH")
-                .expect("EMBEDDING_MODEL_PATH is required (path to BGE-Small ONNX file)"),
+            cloud_upstream_base_url: env::var("CLOUD_UPSTREAM_BASE_URL")
+                .unwrap_or_else(|_| "https://api.openai.com".to_string()),
 
-            lancedb_path: env::var("LANCEDB_PATH")
-                .unwrap_or_else(|_| "./data/routing.lance".to_string()),
+            local_upstream_base_url: env::var("LOCAL_UPSTREAM_BASE_URL")
+                .ok()
+                .and_then(|value| {
+                    let trimmed = value.trim().to_string();
+                    if trimmed.is_empty() {
+                        None
+                    } else {
+                        Some(trimmed)
+                    }
+                }),
+
+            routing_local_keywords: env::var("ROUTING_LOCAL_KEYWORDS")
+                .unwrap_or_default()
+                .split(',')
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(ToOwned::to_owned)
+                .collect(),
+
+            routing_default_target: env::var("ROUTING_DEFAULT_TARGET")
+                .unwrap_or_else(|_| "cloud".to_string()),
 
             log_level: env::var("LOG_LEVEL")
                 .unwrap_or_else(|_| "INFO".to_string()),
@@ -60,41 +82,16 @@ impl ProxyConfig {
 }
 
 // ---------------------------------------------------------------------------
-// Provider inference (Option 1 — infer from model name, no extra header needed)
-// ---------------------------------------------------------------------------
-
-// Called by proxy.rs during upstream_request_filter to determine which
-// upstream URL to forward to, and which provider key to look up in Redis.
-pub fn infer_provider(model: &str) -> &'static str {
-    if model.starts_with("gpt-") || model.starts_with("o1") || model.starts_with("o3") {
-        "openai"
-    } else if model.starts_with("claude-") {
-        "anthropic"
-    } else if model.starts_with("gemini-") {
-        "gemini"
-    } else {
-        "openai" // default fallback
-    }
-}
-
-// Maps a provider name to its base API URL.
-// proxy.rs calls this to set the upstream host for Pingora.
-pub fn provider_base_url(provider: &str) -> &'static str {
-    match provider {
-        "anthropic" => "api.anthropic.com",
-        "gemini"    => "generativelanguage.googleapis.com",
-        _           => "api.openai.com", // openai + default
-    }
-}
-
-// ---------------------------------------------------------------------------
 // Entry point
 // ---------------------------------------------------------------------------
 
-fn main() {
+fn main() -> Result<()> {
+    default_provider()
+        .install_default()
+        .expect("failed to install rustls crypto provider");
+
     // 1. Load config from environment
-    let config = ProxyConfig::from_env()
-        .expect("Failed to load config from environment");
+    let config = ProxyConfig::from_env()?;
 
     // 2. Initialize structured logging
     tracing_subscriber::fmt()
@@ -103,9 +100,7 @@ fn main() {
 
     tracing::info!("Starting MaskProxy on port {}", config.port);
 
-    // 3. Build async dependencies using a temporary Tokio runtime.
-    //    We do this before handing control to Pingora, which manages
-    //    its own internal runtime from server.run_forever() onwards.
+    // 3. Build async dependencies up front before handing control to Pingora.
     let rt = tokio::runtime::Runtime::new()
         .expect("Failed to create startup Tokio runtime");
 
@@ -116,12 +111,21 @@ fn main() {
     });
 
     let router = rt.block_on(async {
-        Router::new(&config.embedding_model_path, &config.lancedb_path)
+        Router::new(
+            &config.cloud_upstream_base_url,
+            config.local_upstream_base_url.clone(),
+            config.routing_local_keywords.clone(),
+            if config.routing_default_target.eq_ignore_ascii_case("local") {
+                crate::router::RouteTarget::Local
+            } else {
+                crate::router::RouteTarget::Cloud
+            },
+        )
             .await
             .expect("Failed to initialise router")
     });
 
-    // Drop the startup runtime — Pingora takes over async from here
+    // Drop the startup runtime before Pingora takes over the process runtime.
     drop(rt);
 
     // 4. Build synchronous dependencies (ONNX model load is synchronous)
@@ -129,12 +133,11 @@ fn main() {
         .expect("Failed to load NER model");
 
     // 5. Construct the proxy handler
-    let proxy = MaskProxy::new(redis, ner, router, config.api_backend_url);
+    let proxy = MaskProxy::new(redis, ner, router);
+    let proxy = proxy.with_backend_api_url(config.api_backend_url.clone());
 
-    // 6. Set up the Pingora server and register the proxy service
-    let opt = Opt::default();
-    let mut server = Server::new(Some(opt))
-        .expect("Failed to create Pingora server");
+    let opt = Opt::parse();
+    let mut server = Server::new(Some(opt))?;
     server.bootstrap();
 
     let mut proxy_service = http_proxy_service(&server.configuration, proxy);
@@ -142,7 +145,5 @@ fn main() {
     server.add_service(proxy_service);
 
     tracing::info!("MaskProxy listening on 0.0.0.0:{}", config.port);
-
-    // 7. Blocks here — Pingora runs the proxy until the process exits
     server.run_forever();
 }
