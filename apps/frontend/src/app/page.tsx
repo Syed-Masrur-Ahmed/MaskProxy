@@ -1,6 +1,5 @@
 import { StatsBar } from "@/components/stats-bar";
 import { LiveRequestLogs } from "@/components/live-request-logs";
-import { PrivacySettings } from "@/components/privacy-settings";
 
 export default function DashboardPage() {
   return (
@@ -9,7 +8,7 @@ export default function DashboardPage() {
       <div>
         <h1 className="text-xl font-semibold tracking-tight">Developer Dashboard</h1>
         <p className="text-sm text-muted-foreground">
-          Monitor proxied LLM requests and configure privacy controls
+          Monitor proxied LLM requests in real time
         </p>
       </div>
 
@@ -17,13 +16,7 @@ export default function DashboardPage() {
       <StatsBar />
 
       {/* Main content */}
-      <div className="grid grid-cols-1 gap-6 xl:grid-cols-[1fr_320px]">
-        {/* Live Request Logs — spans full width on small screens */}
-        <LiveRequestLogs />
-
-        {/* Privacy Settings panel */}
-        <PrivacySettings />
-      </div>
+      <LiveRequestLogs />
     </div>
   );
 }
