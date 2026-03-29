@@ -9,9 +9,9 @@ path = "src/main.rs"
 
 [dependencies]
 # Pingora server / proxy integration
-pingora-core     = { version = "0.4.0", features = ["rustls"] }
-pingora-proxy    = { version = "0.4.0", features = ["rustls"] }
-pingora-http     = "0.4.0"
+pingora-core     = { version = "0.5.0", features = ["rustls"] }
+pingora-proxy    = { version = "0.5.0", features = ["rustls"] }
+pingora-http     = "0.5.0"
 bytes            = "1"
 clap             = { version = "3.2.25", features = ["derive"] }
 
@@ -46,5 +46,3 @@ thiserror        = "1"
 tracing          = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
-[patch.crates-io]
-pingora-core = { path = "vendor/pingora-core" }
