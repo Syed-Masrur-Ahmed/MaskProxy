@@ -1,7 +1,13 @@
+mod embedding;
+
+use std::sync::Arc;
+
 use anyhow::Result;
 use async_trait::async_trait;
 
 use crate::state::lancedb::RouteMatch;
+
+pub use embedding::{load_route_examples, OnnxTextEmbeddingProvider};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum RouteTarget {
@@ -24,13 +30,32 @@ pub enum UpstreamTarget {
     Local(String),
 }
 
-pub trait EmbeddingProvider {
+pub trait EmbeddingProvider: Send + Sync {
     fn embed(&self, text: &str) -> Result<Vec<f32>>;
 }
 
 #[async_trait]
-pub trait SemanticRouteStore {
+pub trait SemanticRouteStore: Send + Sync {
     async fn query(&self, embedding: &[f32], limit: usize) -> Result<Vec<RouteMatch>>;
+}
+
+impl<T> EmbeddingProvider for Arc<T>
+where
+    T: EmbeddingProvider + ?Sized,
+{
+    fn embed(&self, text: &str) -> Result<Vec<f32>> {
+        (**self).embed(text)
+    }
+}
+
+#[async_trait]
+impl<T> SemanticRouteStore for Arc<T>
+where
+    T: SemanticRouteStore + ?Sized,
+{
+    async fn query(&self, embedding: &[f32], limit: usize) -> Result<Vec<RouteMatch>> {
+        (**self).query(embedding, limit).await
+    }
 }
 
 pub struct SemanticRouter<P, S> {
@@ -117,12 +142,24 @@ where
     }
 }
 
-#[derive(Clone, Debug)]
+pub type SharedEmbeddingProvider = Arc<dyn EmbeddingProvider>;
+pub type SharedSemanticRouteStore = Arc<dyn SemanticRouteStore>;
+type RuntimeSemanticRouter = SemanticRouter<SharedEmbeddingProvider, SharedSemanticRouteStore>;
+
+#[derive(Clone)]
+enum RoutingMode {
+    Keyword {
+        local_keywords: Vec<String>,
+        default_target: RouteTarget,
+    },
+    Semantic(Arc<RuntimeSemanticRouter>),
+}
+
+#[derive(Clone)]
 pub struct Router {
     cloud_base_url: String,
     local_base_url: Option<String>,
-    local_keywords: Vec<String>,
-    default_target: RouteTarget,
+    mode: RoutingMode,
 }
 
 impl Router {
@@ -151,45 +188,89 @@ impl Router {
         Self {
             cloud_base_url: cloud_base_url.into(),
             local_base_url,
-            local_keywords: local_keywords
-                .into_iter()
-                .map(|keyword| keyword.trim().to_lowercase())
-                .filter(|keyword| !keyword.is_empty())
-                .collect(),
-            default_target,
+            mode: RoutingMode::Keyword {
+                local_keywords: local_keywords
+                    .into_iter()
+                    .map(|keyword| keyword.trim().to_lowercase())
+                    .filter(|keyword| !keyword.is_empty())
+                    .collect(),
+                default_target,
+            },
+        }
+    }
+
+    pub fn with_semantic(
+        cloud_base_url: impl Into<String>,
+        local_base_url: Option<String>,
+        embedding_provider: Arc<dyn EmbeddingProvider>,
+        route_store: Arc<dyn SemanticRouteStore>,
+        similarity_threshold: f32,
+        default_target: RouteTarget,
+        top_k: usize,
+    ) -> Self {
+        Self {
+            cloud_base_url: cloud_base_url.into(),
+            local_base_url,
+            mode: RoutingMode::Semantic(Arc::new(SemanticRouter::new(
+                embedding_provider,
+                route_store,
+                similarity_threshold,
+                default_target,
+                top_k,
+            ))),
         }
     }
 
     pub fn decide(&self, prompt: &str) -> RouteDecision {
-        let normalized = prompt.to_lowercase();
-        let matched_keywords: Vec<String> = self
-            .local_keywords
-            .iter()
-            .filter(|keyword| normalized.contains(keyword.as_str()))
-            .cloned()
-            .collect();
+        match &self.mode {
+            RoutingMode::Keyword {
+                local_keywords,
+                default_target,
+            } => {
+                let normalized = prompt.to_lowercase();
+                let matched_keywords: Vec<String> = local_keywords
+                    .iter()
+                    .filter(|keyword| normalized.contains(keyword.as_str()))
+                    .cloned()
+                    .collect();
 
-        if !matched_keywords.is_empty() {
-            return RouteDecision {
-                target: RouteTarget::Local,
-                reason: "keyword_match",
-                matched_keywords,
+                if !matched_keywords.is_empty() {
+                    return RouteDecision {
+                        target: RouteTarget::Local,
+                        reason: "keyword_match",
+                        matched_keywords,
+                        matched_example: None,
+                        score: None,
+                    };
+                }
+
+                RouteDecision {
+                    target: default_target.clone(),
+                    reason: "default_target",
+                    matched_keywords: Vec::new(),
+                    matched_example: None,
+                    score: None,
+                }
+            }
+            RoutingMode::Semantic(_) => RouteDecision {
+                target: RouteTarget::Cloud,
+                reason: "router_requires_async_decision",
+                matched_keywords: Vec::new(),
                 matched_example: None,
                 score: None,
-            };
+            },
         }
+    }
 
-        RouteDecision {
-            target: self.default_target.clone(),
-            reason: "default_target",
-            matched_keywords: Vec::new(),
-            matched_example: None,
-            score: None,
+    async fn decide_async(&self, prompt: &str) -> Result<RouteDecision> {
+        match &self.mode {
+            RoutingMode::Keyword { .. } => Ok(self.decide(prompt)),
+            RoutingMode::Semantic(router) => router.decide(prompt).await,
         }
     }
 
     pub async fn route(&self, prompt: &str) -> Result<UpstreamTarget> {
-        let decision = self.decide(prompt);
+        let decision = self.decide_async(prompt).await?;
         Ok(match decision.target {
             RouteTarget::Local => {
                 UpstreamTarget::Local(self.local_base_url.clone().ok_or_else(|| {

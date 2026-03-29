@@ -143,6 +143,64 @@ async fn semantic_router_selects_best_match() {
 }
 
 #[tokio::test]
+async fn semantic_router_route_uses_local_upstream() {
+    let router = Router::with_semantic(
+        "https://api.openai.com",
+        Some("http://localhost:8001".to_string()),
+        std::sync::Arc::new(FakeEmbeddingProvider {
+            embedding: vec![1.0, 0.0],
+        }),
+        std::sync::Arc::new(FakeRouteStore {
+            matches: vec![RouteMatch {
+                text: "Patient discharge summary".to_string(),
+                target: RouteTarget::Local,
+                score: 0.92,
+            }],
+        }),
+        0.8,
+        RouteTarget::Cloud,
+        3,
+    );
+
+    let upstream = router.route("medical note").await.unwrap();
+
+    assert_eq!(
+        upstream,
+        UpstreamTarget::Local("http://localhost:8001".to_string())
+    );
+}
+
+#[tokio::test]
+async fn semantic_router_route_errors_without_local_upstream() {
+    let router = Router::with_semantic(
+        "https://api.openai.com",
+        None,
+        std::sync::Arc::new(FakeEmbeddingProvider {
+            embedding: vec![1.0, 0.0],
+        }),
+        std::sync::Arc::new(FakeRouteStore {
+            matches: vec![RouteMatch {
+                text: "Patient discharge summary".to_string(),
+                target: RouteTarget::Local,
+                score: 0.92,
+            }],
+        }),
+        0.8,
+        RouteTarget::Cloud,
+        3,
+    );
+
+    let error = match router.route("medical note").await {
+        Ok(_) => panic!("expected missing local upstream to return an error"),
+        Err(error) => error,
+    };
+
+    assert!(error
+        .to_string()
+        .contains("Local route selected but no local upstream is configured"));
+}
+
+#[tokio::test]
 async fn semantic_router_falls_back_below_threshold() {
     let router = SemanticRouter::new(
         FakeEmbeddingProvider {
