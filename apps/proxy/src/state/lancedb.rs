@@ -3,8 +3,7 @@ use std::sync::Arc;
 use crate::router::{RouteTarget, SemanticRouteStore};
 use anyhow::{anyhow, ensure, Result};
 use arrow_array::{
-    types::Float32Type, FixedSizeListArray, Float32Array, Float64Array, RecordBatch,
-    RecordBatchIterator, StringArray,
+    types::Float32Type, FixedSizeListArray, Float32Array, Float64Array, RecordBatch, StringArray,
 };
 use arrow_schema::{DataType, Field, Schema, SchemaRef};
 use async_trait::async_trait;
@@ -60,11 +59,9 @@ impl LanceDbState {
         validate_examples(examples, self.vector_dim)?;
 
         let batch = route_batch(examples, self.vector_dim)?;
-        let reader =
-            RecordBatchIterator::new(vec![Ok(batch)].into_iter(), route_schema(self.vector_dim));
 
         self.table
-            .add(reader)
+            .add(batch)
             .mode(AddDataMode::Overwrite)
             .execute()
             .await?;

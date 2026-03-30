@@ -24,7 +24,7 @@ impl RedisState {
         mapping: &HashMap<String, String>,
         ttl_secs: u64,
     ) -> Result<()> {
-        let mut connection = self.client.get_multiplexed_tokio_connection().await?;
+        let mut connection = self.client.get_multiplexed_async_connection().await?;
         let payload = serde_json::to_string(mapping)?;
         let _: () = connection
             .set_ex(self.key(session_id), payload, ttl_secs)
@@ -33,19 +33,20 @@ impl RedisState {
     }
 
     pub async fn get_value(&self, key: &str) -> Result<Option<String>> {
-        let mut connection = self.client.get_multiplexed_tokio_connection().await?;
+        let mut connection = self.client.get_multiplexed_async_connection().await?;
         let value: Option<String> = connection.get(key).await?;
         Ok(value)
     }
 
     pub async fn set_value(&self, key: &str, value: &str, ttl_secs: u64) -> Result<()> {
-        let mut connection = self.client.get_multiplexed_tokio_connection().await?;
+        let mut connection = self.client.get_multiplexed_async_connection().await?;
         let _: () = connection.set_ex(key, value, ttl_secs).await?;
         Ok(())
     }
 
+    #[allow(dead_code)]
     pub async fn get_mapping(&self, session_id: &str) -> Result<HashMap<String, String>> {
-        let mut connection = self.client.get_multiplexed_tokio_connection().await?;
+        let mut connection = self.client.get_multiplexed_async_connection().await?;
         let payload: Option<String> = connection.get(self.key(session_id)).await?;
 
         match payload {
@@ -54,8 +55,9 @@ impl RedisState {
         }
     }
 
+    #[allow(dead_code)]
     pub async fn delete_session(&self, session_id: &str) -> Result<()> {
-        let mut connection = self.client.get_multiplexed_tokio_connection().await?;
+        let mut connection = self.client.get_multiplexed_async_connection().await?;
         let _: usize = connection.del(self.key(session_id)).await?;
         Ok(())
     }
@@ -75,6 +77,9 @@ mod tests {
 
     #[test]
     fn redis_key_uses_session_prefix() {
-        assert_eq!(session_key("maskproxy:session", "abc123"), "maskproxy:session:abc123");
+        assert_eq!(
+            session_key("maskproxy:session", "abc123"),
+            "maskproxy:session:abc123"
+        );
     }
 }

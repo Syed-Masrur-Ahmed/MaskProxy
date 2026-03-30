@@ -17,8 +17,7 @@ static EMAIL_RE: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"(?i)\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b").expect("valid email regex")
 });
 static PHONE_RE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"(?:\+?1[-.\s]?)?(?:\(?\d{3}\)?[-.\s]?){2}\d{4}")
-        .expect("valid phone regex")
+    Regex::new(r"(?:\+?1[-.\s]?)?(?:\(?\d{3}\)?[-.\s]?){2}\d{4}").expect("valid phone regex")
 });
 static SSN_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"\b\d{3}-\d{2}-\d{4}\b").expect("valid ssn regex"));
@@ -173,7 +172,9 @@ fn push_regex_matches(
     entities: &mut Vec<Entity>,
 ) {
     for capture in pattern.find_iter(text) {
-        if require_non_digit_boundaries && !has_non_digit_boundaries(text, capture.start(), capture.end()) {
+        if require_non_digit_boundaries
+            && !has_non_digit_boundaries(text, capture.start(), capture.end())
+        {
             continue;
         }
 
@@ -208,7 +209,11 @@ fn has_non_digit_boundaries(text: &str, start: usize, end: usize) -> bool {
     left_ok && right_ok
 }
 
-fn merge_detected_entities(text: &str, regex_entities: Vec<Entity>, ner_entities: Vec<Entity>) -> Vec<Entity> {
+fn merge_detected_entities(
+    text: &str,
+    regex_entities: Vec<Entity>,
+    ner_entities: Vec<Entity>,
+) -> Vec<Entity> {
     let mut candidates: Vec<PrioritizedEntity> = regex_entities
         .into_iter()
         .map(|entity| PrioritizedEntity {
@@ -236,21 +241,31 @@ fn merge_detected_entities(text: &str, regex_entities: Vec<Entity>, ner_entities
 
     let mut selected: Vec<PrioritizedEntity> = Vec::new();
     for candidate in candidates {
-        if selected.iter().any(|existing| entities_overlap(&existing.entity, &candidate.entity)) {
+        if selected
+            .iter()
+            .any(|existing| entities_overlap(&existing.entity, &candidate.entity))
+        {
             continue;
         }
         selected.push(candidate);
     }
 
     selected.sort_by_key(|candidate| candidate.entity.start);
-    selected.into_iter().map(|candidate| candidate.entity).collect()
+    selected
+        .into_iter()
+        .map(|candidate| candidate.entity)
+        .collect()
 }
 
 fn entities_overlap(left: &Entity, right: &Entity) -> bool {
     left.start < right.end && right.start < left.end
 }
 
-pub fn mask_text_with_entities(text: &str, entities: &[Entity], state: &mut MappingState) -> String {
+pub fn mask_text_with_entities(
+    text: &str,
+    entities: &[Entity],
+    state: &mut MappingState,
+) -> String {
     if entities.is_empty() {
         return text.to_string();
     }
@@ -283,8 +298,8 @@ mod tests {
     use serde_json::json;
 
     use super::{
-        detect_regex_entities, has_non_digit_boundaries, mask_text_with_entities, merge_detected_entities,
-        MappingState, Masker,
+        detect_regex_entities, has_non_digit_boundaries, mask_text_with_entities,
+        merge_detected_entities, MappingState, Masker,
     };
     use crate::masker::ner::{Entity, NER};
 
@@ -352,13 +367,18 @@ mod tests {
 
     #[test]
     fn detect_regex_entities_finds_email_phone_and_ssn() {
-        let entities = detect_regex_entities(
-            "Email alice@example.com, call 415-555-2671, SSN 123-45-6789",
-        );
+        let entities =
+            detect_regex_entities("Email alice@example.com, call 415-555-2671, SSN 123-45-6789");
 
-        assert!(entities.iter().any(|entity| entity.kind == "EMAIL" && entity.text == "alice@example.com"));
-        assert!(entities.iter().any(|entity| entity.kind == "PHONE" && entity.text == "415-555-2671"));
-        assert!(entities.iter().any(|entity| entity.kind == "SSN" && entity.text == "123-45-6789"));
+        assert!(entities
+            .iter()
+            .any(|entity| entity.kind == "EMAIL" && entity.text == "alice@example.com"));
+        assert!(entities
+            .iter()
+            .any(|entity| entity.kind == "PHONE" && entity.text == "415-555-2671"));
+        assert!(entities
+            .iter()
+            .any(|entity| entity.kind == "SSN" && entity.text == "123-45-6789"));
     }
 
     #[test]
@@ -448,7 +468,9 @@ mod tests {
     fn assert_detected(text: &str, kind: &str, expected: &str) {
         let entities = detect_regex_entities(text);
         assert!(
-            entities.iter().any(|e| e.kind == kind && e.text == expected),
+            entities
+                .iter()
+                .any(|e| e.kind == kind && e.text == expected),
             "Expected {kind}={expected:?} in {text:?}, got: {entities:?}"
         );
     }
@@ -458,7 +480,10 @@ mod tests {
         assert!(
             !entities.iter().any(|e| e.kind == kind),
             "Expected no {kind} in {text:?}, but got: {:?}",
-            entities.iter().filter(|e| e.kind == kind).collect::<Vec<_>>()
+            entities
+                .iter()
+                .filter(|e| e.kind == kind)
+                .collect::<Vec<_>>()
         );
     }
 
@@ -476,28 +501,48 @@ mod tests {
 
     #[test]
     fn email_mixed_case() {
-        assert_detected("reach Alice.Smith@Example.COM", "EMAIL", "Alice.Smith@Example.COM");
+        assert_detected(
+            "reach Alice.Smith@Example.COM",
+            "EMAIL",
+            "Alice.Smith@Example.COM",
+        );
     }
 
     #[test]
     fn email_with_plus_tag() {
-        assert_detected("use user+tag@gmail.com for signup", "EMAIL", "user+tag@gmail.com");
+        assert_detected(
+            "use user+tag@gmail.com for signup",
+            "EMAIL",
+            "user+tag@gmail.com",
+        );
     }
 
     #[test]
     fn email_with_subdomain() {
-        assert_detected("write to hr@mail.corp.example.co.uk", "EMAIL", "hr@mail.corp.example.co.uk");
+        assert_detected(
+            "write to hr@mail.corp.example.co.uk",
+            "EMAIL",
+            "hr@mail.corp.example.co.uk",
+        );
     }
 
     #[test]
     fn email_numeric_local() {
-        assert_detected("id 12345@example.com is active", "EMAIL", "12345@example.com");
+        assert_detected(
+            "id 12345@example.com is active",
+            "EMAIL",
+            "12345@example.com",
+        );
     }
 
     #[test]
     fn email_multiple_in_text() {
         let entities = detect_regex_entities("a@b.com and c@d.org are both valid");
-        let emails: Vec<&str> = entities.iter().filter(|e| e.kind == "EMAIL").map(|e| e.text.as_str()).collect();
+        let emails: Vec<&str> = entities
+            .iter()
+            .filter(|e| e.kind == "EMAIL")
+            .map(|e| e.text.as_str())
+            .collect();
         assert!(emails.contains(&"a@b.com"), "missing a@b.com: {emails:?}");
         assert!(emails.contains(&"c@d.org"), "missing c@d.org: {emails:?}");
     }
@@ -547,9 +592,19 @@ mod tests {
     #[test]
     fn phone_multiple() {
         let entities = detect_regex_entities("call 212-555-1234 or 415-555-6789");
-        let phones: Vec<&str> = entities.iter().filter(|e| e.kind == "PHONE").map(|e| e.text.as_str()).collect();
-        assert!(phones.contains(&"212-555-1234"), "missing 212 phone: {phones:?}");
-        assert!(phones.contains(&"415-555-6789"), "missing 415 phone: {phones:?}");
+        let phones: Vec<&str> = entities
+            .iter()
+            .filter(|e| e.kind == "PHONE")
+            .map(|e| e.text.as_str())
+            .collect();
+        assert!(
+            phones.contains(&"212-555-1234"),
+            "missing 212 phone: {phones:?}"
+        );
+        assert!(
+            phones.contains(&"415-555-6789"),
+            "missing 415 phone: {phones:?}"
+        );
     }
 
     #[test]
@@ -573,9 +628,16 @@ mod tests {
     #[test]
     fn ssn_multiple() {
         let entities = detect_regex_entities("SSN 123-45-6789 and 987-65-4321");
-        let ssns: Vec<&str> = entities.iter().filter(|e| e.kind == "SSN").map(|e| e.text.as_str()).collect();
+        let ssns: Vec<&str> = entities
+            .iter()
+            .filter(|e| e.kind == "SSN")
+            .map(|e| e.text.as_str())
+            .collect();
         assert!(ssns.contains(&"123-45-6789"), "missing first SSN: {ssns:?}");
-        assert!(ssns.contains(&"987-65-4321"), "missing second SSN: {ssns:?}");
+        assert!(
+            ssns.contains(&"987-65-4321"),
+            "missing second SSN: {ssns:?}"
+        );
     }
 
     #[test]
@@ -594,14 +656,28 @@ mod tests {
     fn mixed_email_phone_ssn_all_detected() {
         let text = "Email me at hr@acme.com, call 310-555-9876, my SSN is 111-22-3333.";
         let entities = detect_regex_entities(text);
-        assert!(entities.iter().any(|e| e.kind == "EMAIL" && e.text == "hr@acme.com"), "missing email");
-        assert!(entities.iter().any(|e| e.kind == "PHONE" && e.text == "310-555-9876"), "missing phone");
-        assert!(entities.iter().any(|e| e.kind == "SSN" && e.text == "111-22-3333"), "missing ssn");
+        assert!(
+            entities
+                .iter()
+                .any(|e| e.kind == "EMAIL" && e.text == "hr@acme.com"),
+            "missing email"
+        );
+        assert!(
+            entities
+                .iter()
+                .any(|e| e.kind == "PHONE" && e.text == "310-555-9876"),
+            "missing phone"
+        );
+        assert!(
+            entities
+                .iter()
+                .any(|e| e.kind == "SSN" && e.text == "111-22-3333"),
+            "missing ssn"
+        );
     }
 
     #[test]
     fn mixed_repeated_email_gets_same_placeholder() {
-        let masker = Masker::new(NER::disabled());
         let text = "Send to hr@acme.com and cc hr@acme.com";
         let mut state = MappingState::default();
 
@@ -633,7 +709,6 @@ mod tests {
     #[test]
     fn no_pii_url_not_email() {
         // A URL shouldn't be detected as an email
-        let entities = detect_regex_entities("visit https://example.com/path?q=1");
         assert_not_detected_kind("visit https://example.com/path?q=1", "EMAIL");
     }
 
@@ -657,8 +732,14 @@ mod tests {
         assert!(!content.contains("test@example.org"), "email leaked");
         assert!(!content.contains("650-555-0199"), "phone leaked");
         assert!(!content.contains("999-88-7777"), "ssn leaked");
-        assert!(content.contains("<<MASK:EMAIL_1:MASK>>"), "email not masked");
-        assert!(content.contains("<<MASK:PHONE_1:MASK>>"), "phone not masked");
+        assert!(
+            content.contains("<<MASK:EMAIL_1:MASK>>"),
+            "email not masked"
+        );
+        assert!(
+            content.contains("<<MASK:PHONE_1:MASK>>"),
+            "phone not masked"
+        );
         assert!(content.contains("<<MASK:SSN_1:MASK>>"), "ssn not masked");
         assert_eq!(masked.token_map.len(), 3);
     }
@@ -676,7 +757,10 @@ mod tests {
         let prompt = payload["prompt"].as_str().unwrap();
 
         assert!(!prompt.contains("alice@corp.com"), "email leaked in prompt");
-        assert!(prompt.contains("<<MASK:EMAIL_1:MASK>>"), "email not masked in prompt");
+        assert!(
+            prompt.contains("<<MASK:EMAIL_1:MASK>>"),
+            "email not masked in prompt"
+        );
     }
 
     #[tokio::test]
@@ -706,7 +790,13 @@ mod tests {
         .to_string();
 
         let masked = masker.mask(&body).await.unwrap();
-        assert!(masked.token_map.contains_key("<<MASK:EMAIL_1:MASK>>"), "email not in token map");
-        assert!(masked.token_map.contains_key("<<MASK:PHONE_1:MASK>>"), "phone not in token map");
+        assert!(
+            masked.token_map.contains_key("<<MASK:EMAIL_1:MASK>>"),
+            "email not in token map"
+        );
+        assert!(
+            masked.token_map.contains_key("<<MASK:PHONE_1:MASK>>"),
+            "phone not in token map"
+        );
     }
 }

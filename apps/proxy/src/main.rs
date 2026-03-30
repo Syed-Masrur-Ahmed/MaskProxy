@@ -62,7 +62,8 @@ impl ProxyConfig {
             api_backend_url: env::var("API_BACKEND_URL")
                 .unwrap_or_else(|_| "http://localhost:8000".to_string()),
 
-            ner_model_path: env::var("NER_MODEL_PATH").unwrap_or_default(),
+            ner_model_path: env::var("NER_MODEL_PATH")
+                .unwrap_or_else(|_| default_proxy_path("models/optimum-bert-base-NER/model.onnx")),
 
             cloud_upstream_base_url: env::var("CLOUD_UPSTREAM_BASE_URL")
                 .unwrap_or_else(|_| "https://api.openai.com".to_string()),

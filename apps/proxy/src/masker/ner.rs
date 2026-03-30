@@ -63,7 +63,10 @@ impl NER {
 
         let model_path = PathBuf::from(model_path);
         if !model_path.exists() {
-            return Err(anyhow!("NER model file not found: {}", model_path.display()));
+            return Err(anyhow!(
+                "NER model file not found: {}",
+                model_path.display()
+            ));
         }
 
         let artifact_dir = model_path
@@ -125,7 +128,7 @@ impl OnnxTokenClassificationBackend {
             .map_err(|error| anyhow!("failed to load tokenizer: {error}"))?;
         let id_to_label = load_labels(labels_path)?;
 
-        let mut session = Session::builder()?
+        let session = Session::builder()?
             .commit_from_file(model_path)
             .with_context(|| format!("failed to load ONNX model from {}", model_path.display()))?;
         let has_token_type_ids = session
@@ -263,10 +266,7 @@ fn load_labels(path: &Path) -> Result<HashMap<usize, String>> {
 }
 
 fn softmax(logits: &[f32]) -> Vec<f32> {
-    let max_value = logits
-        .iter()
-        .copied()
-        .fold(f32::NEG_INFINITY, f32::max);
+    let max_value = logits.iter().copied().fold(f32::NEG_INFINITY, f32::max);
     let exps: Vec<f32> = logits
         .iter()
         .map(|value| (*value - max_value).exp())
@@ -403,9 +403,11 @@ fn flush_prediction(
     current_kind: &mut Option<String>,
     current_scores: &mut Vec<f32>,
 ) {
-    let (Some(start), Some(end), Some(kind)) =
-        (current_start.take(), current_end.take(), current_kind.take())
-    else {
+    let (Some(start), Some(end), Some(kind)) = (
+        current_start.take(),
+        current_end.take(),
+        current_kind.take(),
+    ) else {
         current_scores.clear();
         return;
     };

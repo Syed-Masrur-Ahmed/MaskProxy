@@ -30,12 +30,12 @@ rustls           = { version = "0.23", features = ["ring"] }
 ort              = { version = "2.0.0-rc.12", features = ["load-dynamic", "ndarray"] }
 tokenizers       = "0.20"
 futures          = "0.3"
-lancedb          = "0.12"
-arrow-array      = "52"
-arrow-schema     = "52"
+lancedb          = "0.27.1"
+arrow-array      = "57.2"
+arrow-schema     = "57.2"
 
 # Redis (session state + token map storage)
-redis            = { version = "0.25", features = ["tokio-comp", "connection-manager"] }
+redis            = { version = "1.1.0", features = ["tokio-comp", "connection-manager"] }
 
 # Unique session IDs per request
 uuid             = { version = "1", features = ["v4"] }
@@ -47,6 +47,3 @@ thiserror        = "1"
 # Tracing / observability (Phase 3 — wired up early so spans are available)
 tracing          = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-
-[patch.crates-io]
-lance = { path = "vendor/lance" }
