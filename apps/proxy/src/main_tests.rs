@@ -1,7 +1,8 @@
 use std::fs;
 use std::path::PathBuf;
 
-use super::{ensure_semantic_routing_paths_exist, is_likely_local_upstream};
+use super::{ensure_ner_health, ensure_semantic_routing_paths_exist, validate_local_upstream_base_url};
+use crate::masker::ner::NER;
 use uuid::Uuid;
 
 fn temp_dir() -> PathBuf {
@@ -11,20 +12,24 @@ fn temp_dir() -> PathBuf {
 }
 
 #[test]
-fn local_upstream_detection_accepts_private_hosts() {
-    assert!(is_likely_local_upstream("http://localhost:8001"));
-    assert!(is_likely_local_upstream("http://127.0.0.1:8001"));
-    assert!(is_likely_local_upstream("http://10.0.0.4:8001"));
-    assert!(is_likely_local_upstream("http://192.168.1.5:8001"));
-    assert!(is_likely_local_upstream("http://172.20.0.7:8001"));
-    assert!(is_likely_local_upstream("http://router.local:8001"));
+fn local_upstream_validation_accepts_private_hosts() {
+    assert!(validate_local_upstream_base_url(Some("http://localhost:8001")).is_ok());
+    assert!(validate_local_upstream_base_url(Some("http://127.0.0.1:8001")).is_ok());
+    assert!(validate_local_upstream_base_url(Some("http://10.0.0.4:8001")).is_ok());
+    assert!(validate_local_upstream_base_url(Some("http://192.168.1.5:8001")).is_ok());
+    assert!(validate_local_upstream_base_url(Some("http://172.20.0.7:8001")).is_ok());
 }
 
 #[test]
-fn local_upstream_detection_rejects_public_hosts() {
-    assert!(!is_likely_local_upstream("https://api.openai.com"));
-    assert!(!is_likely_local_upstream("https://example.com"));
-    assert!(!is_likely_local_upstream("not-a-url"));
+fn local_upstream_validation_rejects_public_or_invalid_hosts() {
+    assert!(validate_local_upstream_base_url(Some("http://8.8.8.8:8001")).is_err());
+    assert!(validate_local_upstream_base_url(Some("http://1.1.1.1:8001")).is_err());
+    assert!(validate_local_upstream_base_url(Some("not-a-url")).is_err());
+}
+
+#[tokio::test]
+async fn ner_health_check_allows_disabled_ner() {
+    ensure_ner_health(&NER::disabled()).await.unwrap();
 }
 
 #[test]

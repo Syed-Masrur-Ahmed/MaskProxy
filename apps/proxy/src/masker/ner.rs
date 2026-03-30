@@ -99,6 +99,10 @@ impl NER {
         Self { backend: None }
     }
 
+    pub fn is_disabled(&self) -> bool {
+        self.backend.is_none()
+    }
+
     pub async fn detect_entities(&self, text: &str) -> Result<Vec<Entity>> {
         let Some(backend) = &self.backend else {
             return Ok(Vec::new());

@@ -5,10 +5,12 @@ mod router;
 mod state;
 
 use std::env;
+use std::net::IpAddr;
+use std::net::ToSocketAddrs;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use anyhow::{anyhow, ensure, Result};
+use anyhow::{anyhow, ensure, Context, Result};
 use clap::Parser;
 use pingora_core::server::configuration::Opt;
 use pingora_core::server::Server;
@@ -176,42 +178,72 @@ fn ensure_semantic_routing_paths_exist(
     Ok(())
 }
 
-fn is_likely_local_upstream(url: &str) -> bool {
-    let Ok(parsed) = Url::parse(url) else {
-        return false;
+fn is_private_or_loopback_ip(ip: IpAddr) -> bool {
+    match ip {
+        IpAddr::V4(ipv4) => ipv4.is_private() || ipv4.is_loopback(),
+        IpAddr::V6(ipv6) => ipv6.is_loopback() || ipv6.is_unique_local(),
+    }
+}
+
+fn validate_local_upstream_base_url(local_upstream: Option<&str>) -> Result<()> {
+    let Some(local_upstream) = local_upstream else {
+        return Ok(());
     };
 
-    let Some(host) = parsed.host_str() else {
-        return false;
-    };
+    let parsed = Url::parse(local_upstream)
+        .with_context(|| format!("LOCAL_UPSTREAM_BASE_URL is not a valid URL: {local_upstream}"))?;
+    let host = parsed
+        .host_str()
+        .ok_or_else(|| anyhow!("LOCAL_UPSTREAM_BASE_URL is missing a host: {local_upstream}"))?;
 
-    if host.eq_ignore_ascii_case("localhost") || host.eq_ignore_ascii_case("host.docker.internal") {
-        return true;
+    if host.eq_ignore_ascii_case("localhost") {
+        return Ok(());
     }
 
-    if host.eq_ignore_ascii_case("::1") || host.eq_ignore_ascii_case("[::1]") {
-        return true;
-    }
-
-    if host.ends_with(".local") {
-        return true;
-    }
-
-    let segments: Vec<_> = host.split('.').collect();
-    if segments.len() != 4 {
-        return false;
-    }
-
-    let octets: Option<Vec<u8>> = segments
-        .iter()
-        .map(|segment| segment.parse::<u8>().ok())
+    let port = parsed.port_or_known_default().ok_or_else(|| {
+        anyhow!("LOCAL_UPSTREAM_BASE_URL must include a port or a known URL scheme")
+    })?;
+    let resolved_addrs: Vec<_> = (host, port)
+        .to_socket_addrs()
+        .with_context(|| {
+            format!("LOCAL_UPSTREAM_BASE_URL host could not be resolved: {local_upstream}")
+        })?
         .collect();
-    let Some(octets) = octets else {
-        return false;
-    };
 
-    matches!(octets.as_slice(), [127, ..] | [10, ..] | [192, 168, ..])
-        || (octets[0] == 172 && (16..=31).contains(&octets[1]))
+    ensure!(
+        !resolved_addrs.is_empty(),
+        "LOCAL_UPSTREAM_BASE_URL did not resolve to any addresses: {local_upstream}"
+    );
+    ensure!(
+        resolved_addrs
+            .iter()
+            .all(|addr| is_private_or_loopback_ip(addr.ip())),
+        "LOCAL_UPSTREAM_BASE_URL must resolve only to private or loopback addresses: {local_upstream} -> {:?}",
+        resolved_addrs
+    );
+
+    Ok(())
+}
+
+async fn ensure_ner_health(ner: &NER) -> Result<()> {
+    if ner.is_disabled() {
+        tracing::warn!("NER is disabled; only regex-based masking will run");
+        return Ok(());
+    }
+
+    let smoke_text = "John Smith can be reached by the care team.";
+    let entities = ner.detect_entities(smoke_text).await?;
+    ensure!(
+        !entities.is_empty(),
+        "NER startup health check failed: smoke test returned no entities"
+    );
+
+    tracing::info!(
+        entities = entities.len(),
+        "NER startup health check passed"
+    );
+
+    Ok(())
 }
 
 async fn build_router(config: &ProxyConfig) -> Result<Router> {
@@ -241,15 +273,6 @@ async fn build_router(config: &ProxyConfig) -> Result<Router> {
     let tokenizer_path = Path::new(&config.routing_embedding_tokenizer_path);
     let examples_path = Path::new(&config.routing_examples_path);
     ensure_semantic_routing_paths_exist(model_path, tokenizer_path, examples_path)?;
-
-    if let Some(local_upstream) = &config.local_upstream_base_url {
-        if !is_likely_local_upstream(local_upstream) {
-            tracing::warn!(
-                local_upstream = %local_upstream,
-                "semantic local routing is enabled, but LOCAL_UPSTREAM_BASE_URL does not look local/private"
-            );
-        }
-    }
 
     let embedding_provider = Arc::new(OnnxTextEmbeddingProvider::new(model_path, tokenizer_path)?);
     let route_examples = load_route_examples(examples_path)?;
@@ -334,6 +357,8 @@ fn main() -> Result<()> {
         .with_env_filter(&config.log_level)
         .init();
 
+    validate_local_upstream_base_url(config.local_upstream_base_url.as_deref())?;
+
     tracing::info!("Starting MaskProxy on port {}", config.port);
 
     // 3. Build async dependencies up front before handing control to Pingora.
@@ -345,15 +370,16 @@ fn main() -> Result<()> {
             .expect("Failed to connect to Redis")
     });
 
+    let ner = NER::new(&config.ner_model_path).expect("Failed to load NER model");
+    rt.block_on(async { ensure_ner_health(&ner).await })
+        .expect("NER health check failed");
+
     let router = rt
         .block_on(async { build_router(&config).await })
         .expect("Failed to initialise router");
 
     // Drop the startup runtime before Pingora takes over the process runtime.
     drop(rt);
-
-    // 4. Build synchronous dependencies (ONNX model load is synchronous)
-    let ner = NER::new(&config.ner_model_path).expect("Failed to load NER model");
 
     // 5. Construct the proxy handler
     let proxy = MaskProxy::new(redis, ner, router);
