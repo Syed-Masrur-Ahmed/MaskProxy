@@ -7,6 +7,7 @@ const BASE_URL = "/api";
 export type UserProfile = {
   email: string;
   created_at: string;
+  access_token?: string;
 };
 
 export async function getMe(token: string): Promise<UserProfile> {
@@ -15,11 +16,11 @@ export async function getMe(token: string): Promise<UserProfile> {
   return res.json();
 }
 
-export async function updateEmail(token: string, email: string): Promise<UserProfile> {
+export async function updateEmail(token: string, email: string, password: string): Promise<UserProfile> {
   const res = await fetch(`${BASE_URL}/users/me`, {
     method: "PATCH",
     headers: authHeaders(token),
-    body: JSON.stringify({ email }),
+    body: JSON.stringify({ email, password }),
   });
   if (!res.ok) {
     const body = await res.json().catch(() => ({}));

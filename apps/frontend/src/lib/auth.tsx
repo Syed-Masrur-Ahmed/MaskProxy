@@ -9,6 +9,7 @@ type AuthContextType = {
   login: (email: string, password: string) => Promise<void>;
   register: (email: string, password: string) => Promise<void>;
   logout: () => void;
+  setToken: (token: string) => void;
 };
 
 const AuthContext = createContext<AuthContextType | null>(null);
@@ -66,10 +67,15 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     setToken(null);
   }
 
+  function updateToken(newToken: string) {
+    localStorage.setItem("mp_token", newToken);
+    setToken(newToken);
+  }
+
   const userEmail = token ? decodeEmail(token) : null;
 
   return (
-    <AuthContext.Provider value={{ token, userEmail, isLoading, login, register, logout }}>
+    <AuthContext.Provider value={{ token, userEmail, isLoading, login, register, logout, setToken: updateToken }}>
       {children}
     </AuthContext.Provider>
   );

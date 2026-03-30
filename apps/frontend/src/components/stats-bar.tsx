@@ -39,9 +39,7 @@ export function StatsBar() {
               <p className="text-2xl font-semibold">{value}</p>
               <p className="text-xs text-emerald-600">{delta} vs yesterday</p>
             </div>
-            <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-primary/10">
-              <Icon className="h-4 w-4 text-primary" />
-            </div>
+            <Icon className="h-5 w-5 text-primary" />
           </CardContent>
         </Card>
       ))}

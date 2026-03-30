@@ -1,9 +1,9 @@
 "use client";
 
 import { useState } from "react";
+import Image from "next/image";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { Shield } from "lucide-react";
 import { useAuth } from "@/lib/auth";
 
 export default function LoginPage() {
@@ -32,9 +32,7 @@ export default function LoginPage() {
     <div className="flex min-h-screen items-center justify-center bg-background px-4">
       <div className="w-full max-w-sm space-y-6">
         <div className="flex flex-col items-center gap-2">
-          <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-primary">
-            <Shield className="h-5 w-5 text-primary-foreground" />
-          </div>
+          <Image src="/logo.png" alt="MaskProxy" width={48} height={48} />
           <h1 className="text-xl font-semibold tracking-tight">Sign in to MaskProxy</h1>
           <p className="text-sm text-muted-foreground">AI Privacy Middleware Dashboard</p>
         </div>
