@@ -1,4 +1,13 @@
+mod embedding;
+
+use std::sync::Arc;
+
 use anyhow::Result;
+use async_trait::async_trait;
+
+use crate::state::lancedb::RouteMatch;
+
+pub use embedding::{load_route_examples, OnnxTextEmbeddingProvider};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum RouteTarget {
@@ -21,12 +30,136 @@ pub enum UpstreamTarget {
     Local(String),
 }
 
-#[derive(Clone, Debug)]
+pub trait EmbeddingProvider: Send + Sync {
+    fn embed(&self, text: &str) -> Result<Vec<f32>>;
+}
+
+#[async_trait]
+pub trait SemanticRouteStore: Send + Sync {
+    async fn query(&self, embedding: &[f32], limit: usize) -> Result<Vec<RouteMatch>>;
+}
+
+impl<T> EmbeddingProvider for Arc<T>
+where
+    T: EmbeddingProvider + ?Sized,
+{
+    fn embed(&self, text: &str) -> Result<Vec<f32>> {
+        (**self).embed(text)
+    }
+}
+
+#[async_trait]
+impl<T> SemanticRouteStore for Arc<T>
+where
+    T: SemanticRouteStore + ?Sized,
+{
+    async fn query(&self, embedding: &[f32], limit: usize) -> Result<Vec<RouteMatch>> {
+        (**self).query(embedding, limit).await
+    }
+}
+
+pub struct SemanticRouter<P, S> {
+    embedding_provider: P,
+    route_store: S,
+    similarity_threshold: f32,
+    default_target: RouteTarget,
+    top_k: usize,
+}
+
+impl<P, S> SemanticRouter<P, S>
+where
+    P: EmbeddingProvider,
+    S: SemanticRouteStore,
+{
+    pub fn new(
+        embedding_provider: P,
+        route_store: S,
+        similarity_threshold: f32,
+        default_target: RouteTarget,
+        top_k: usize,
+    ) -> Self {
+        Self {
+            embedding_provider,
+            route_store,
+            similarity_threshold,
+            default_target,
+            top_k,
+        }
+    }
+
+    // Text passed to semantic routing is raw and unmasked. All routing backends
+    // must run locally and must not send prompt text to external services.
+    pub async fn decide(&self, text: &str) -> Result<RouteDecision> {
+        if text.trim().is_empty() {
+            return Ok(RouteDecision {
+                target: self.default_target.clone(),
+                reason: "semantic_default_target",
+                matched_keywords: Vec::new(),
+                matched_example: None,
+                score: None,
+            });
+        }
+
+        let embedding = self.embedding_provider.embed(text)?;
+        if embedding.is_empty() {
+            return Ok(RouteDecision {
+                target: self.default_target.clone(),
+                reason: "semantic_default_target",
+                matched_keywords: Vec::new(),
+                matched_example: None,
+                score: None,
+            });
+        }
+
+        let matches = self.route_store.query(&embedding, self.top_k).await?;
+        let Some(best_match) = matches.first() else {
+            return Ok(RouteDecision {
+                target: self.default_target.clone(),
+                reason: "semantic_default_target",
+                matched_keywords: Vec::new(),
+                matched_example: None,
+                score: None,
+            });
+        };
+
+        if best_match.score < self.similarity_threshold {
+            return Ok(RouteDecision {
+                target: self.default_target.clone(),
+                reason: "semantic_default_target",
+                matched_keywords: Vec::new(),
+                matched_example: Some(best_match.text.clone()),
+                score: Some(best_match.score),
+            });
+        }
+
+        Ok(RouteDecision {
+            target: best_match.target.clone(),
+            reason: "semantic_match",
+            matched_keywords: Vec::new(),
+            matched_example: Some(best_match.text.clone()),
+            score: Some(best_match.score),
+        })
+    }
+}
+
+pub type SharedEmbeddingProvider = Arc<dyn EmbeddingProvider>;
+pub type SharedSemanticRouteStore = Arc<dyn SemanticRouteStore>;
+type RuntimeSemanticRouter = SemanticRouter<SharedEmbeddingProvider, SharedSemanticRouteStore>;
+
+#[derive(Clone)]
+enum RoutingMode {
+    Keyword {
+        local_keywords: Vec<String>,
+        default_target: RouteTarget,
+    },
+    Semantic(Arc<RuntimeSemanticRouter>),
+}
+
+#[derive(Clone)]
 pub struct Router {
     cloud_base_url: String,
     local_base_url: Option<String>,
-    local_keywords: Vec<String>,
-    default_target: RouteTarget,
+    mode: RoutingMode,
 }
 
 impl Router {
@@ -55,123 +188,99 @@ impl Router {
         Self {
             cloud_base_url: cloud_base_url.into(),
             local_base_url,
-            local_keywords: local_keywords
-                .into_iter()
-                .map(|keyword| keyword.trim().to_lowercase())
-                .filter(|keyword| !keyword.is_empty())
-                .collect(),
-            default_target,
+            mode: RoutingMode::Keyword {
+                local_keywords: local_keywords
+                    .into_iter()
+                    .map(|keyword| keyword.trim().to_lowercase())
+                    .filter(|keyword| !keyword.is_empty())
+                    .collect(),
+                default_target,
+            },
+        }
+    }
+
+    pub fn with_semantic(
+        cloud_base_url: impl Into<String>,
+        local_base_url: Option<String>,
+        embedding_provider: Arc<dyn EmbeddingProvider>,
+        route_store: Arc<dyn SemanticRouteStore>,
+        similarity_threshold: f32,
+        default_target: RouteTarget,
+        top_k: usize,
+    ) -> Self {
+        Self {
+            cloud_base_url: cloud_base_url.into(),
+            local_base_url,
+            mode: RoutingMode::Semantic(Arc::new(SemanticRouter::new(
+                embedding_provider,
+                route_store,
+                similarity_threshold,
+                default_target,
+                top_k,
+            ))),
         }
     }
 
     pub fn decide(&self, prompt: &str) -> RouteDecision {
-        let normalized = prompt.to_lowercase();
-        let matched_keywords: Vec<String> = self
-            .local_keywords
-            .iter()
-            .filter(|keyword| normalized.contains(keyword.as_str()))
-            .cloned()
-            .collect();
+        match &self.mode {
+            RoutingMode::Keyword {
+                local_keywords,
+                default_target,
+            } => {
+                let normalized = prompt.to_lowercase();
+                let matched_keywords: Vec<String> = local_keywords
+                    .iter()
+                    .filter(|keyword| normalized.contains(keyword.as_str()))
+                    .cloned()
+                    .collect();
 
-        if !matched_keywords.is_empty() {
-            return RouteDecision {
-                target: RouteTarget::Local,
-                reason: "keyword_match",
-                matched_keywords,
+                if !matched_keywords.is_empty() {
+                    return RouteDecision {
+                        target: RouteTarget::Local,
+                        reason: "keyword_match",
+                        matched_keywords,
+                        matched_example: None,
+                        score: None,
+                    };
+                }
+
+                RouteDecision {
+                    target: default_target.clone(),
+                    reason: "default_target",
+                    matched_keywords: Vec::new(),
+                    matched_example: None,
+                    score: None,
+                }
+            }
+            RoutingMode::Semantic(_) => RouteDecision {
+                target: RouteTarget::Cloud,
+                reason: "router_requires_async_decision",
+                matched_keywords: Vec::new(),
                 matched_example: None,
                 score: None,
-            };
+            },
         }
+    }
 
-        RouteDecision {
-            target: self.default_target.clone(),
-            reason: "default_target",
-            matched_keywords: Vec::new(),
-            matched_example: None,
-            score: None,
+    async fn decide_async(&self, prompt: &str) -> Result<RouteDecision> {
+        match &self.mode {
+            RoutingMode::Keyword { .. } => Ok(self.decide(prompt)),
+            RoutingMode::Semantic(router) => router.decide(prompt).await,
         }
     }
 
     pub async fn route(&self, prompt: &str) -> Result<UpstreamTarget> {
-        let decision = self.decide(prompt);
+        let decision = self.decide_async(prompt).await?;
         Ok(match decision.target {
-            RouteTarget::Local => UpstreamTarget::Local(
-                self.local_base_url.clone().ok_or_else(|| {
+            RouteTarget::Local => {
+                UpstreamTarget::Local(self.local_base_url.clone().ok_or_else(|| {
                     anyhow::anyhow!("Local route selected but no local upstream is configured")
-                })?,
-            ),
+                })?)
+            }
             RouteTarget::Cloud => UpstreamTarget::Cloud(self.cloud_base_url.clone()),
         })
     }
 }
 
 #[cfg(test)]
-mod tests {
-    use super::{RouteTarget, Router, UpstreamTarget};
-
-    #[test]
-    fn keyword_router_prefers_local_on_match() {
-        let router = Router::with_keyword_fallback(
-            "https://api.openai.com",
-            Some("http://localhost:8001".to_string()),
-            vec!["medical".to_string(), "patient".to_string()],
-            RouteTarget::Cloud,
-        );
-
-        let decision = router.decide("Summarize this patient discharge note");
-
-        assert_eq!(decision.target, RouteTarget::Local);
-        assert_eq!(decision.reason, "keyword_match");
-        assert_eq!(decision.matched_keywords, vec!["patient".to_string()]);
-    }
-
-    #[test]
-    fn keyword_router_falls_back_to_default_target() {
-        let router = Router::with_keyword_fallback(
-            "https://api.openai.com",
-            Some("http://localhost:8001".to_string()),
-            vec!["medical".to_string()],
-            RouteTarget::Cloud,
-        );
-
-        let decision = router.decide("What is the capital of Peru?");
-
-        assert_eq!(decision.target, RouteTarget::Cloud);
-        assert_eq!(decision.reason, "default_target");
-    }
-
-    #[tokio::test]
-    async fn route_returns_local_url_when_keyword_matches() {
-        let router = Router::with_keyword_fallback(
-            "https://api.openai.com",
-            Some("http://localhost:8001".to_string()),
-            vec!["medical".to_string()],
-            RouteTarget::Cloud,
-        );
-
-        let upstream = router.route("Please summarize this medical note").await.unwrap();
-
-        assert_eq!(
-            upstream,
-            UpstreamTarget::Local("http://localhost:8001".to_string())
-        );
-    }
-
-    #[tokio::test]
-    async fn route_errors_when_local_keyword_matches_without_local_url() {
-        let router = Router::with_keyword_fallback(
-            "https://api.openai.com",
-            None,
-            vec!["medical".to_string()],
-            RouteTarget::Cloud,
-        );
-
-        let error = router.route("Please summarize this medical note").await.unwrap_err();
-
-        assert!(
-            error
-                .to_string()
-                .contains("Local route selected but no local upstream is configured")
-        );
-    }
-}
+mod tests;
