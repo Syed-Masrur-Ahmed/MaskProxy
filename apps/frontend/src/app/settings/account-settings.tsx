@@ -4,17 +4,24 @@ import { useEffect, useState } from "react";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Separator } from "@/components/ui/separator";
+import { useRouter } from "next/navigation";
 import { useAuth } from "@/lib/auth";
 import { getMe, updateEmail, updatePassword } from "@/lib/api";
-import { useToast } from "@/hooks/use-toast";
+import { toast } from "@/hooks/use-toast";
 
 export function AccountSettings() {
-  const { token } = useAuth();
-  const { toast } = useToast();
+  const { token, logout, setToken } = useAuth();
+  const router = useRouter();
+
+  function handleLogout() {
+    logout();
+    router.replace("/login");
+  }
 
   // Email state
   const [currentEmail, setCurrentEmail] = useState("");
   const [newEmail, setNewEmail] = useState("");
+  const [emailPassword, setEmailPassword] = useState("");
   const [savingEmail, setSavingEmail] = useState(false);
 
   // Password state
@@ -39,9 +46,11 @@ export function AccountSettings() {
     if (!token || newEmail === currentEmail) return;
     setSavingEmail(true);
     try {
-      const updated = await updateEmail(token, newEmail);
+      const updated = await updateEmail(token, newEmail, emailPassword);
       setCurrentEmail(updated.email);
       setNewEmail(updated.email);
+      setEmailPassword("");
+      if (updated.access_token) setToken(updated.access_token);
       toast({ title: "Email updated" });
     } catch (e) {
       toast({
@@ -99,10 +108,22 @@ export function AccountSettings() {
               className="h-9 rounded-md border bg-transparent px-3 text-sm outline-none focus:ring-2 focus:ring-ring"
             />
           </div>
+          <div className="flex flex-col gap-1.5">
+            <label className="text-sm font-medium" htmlFor="email-password">
+              Confirm Password
+            </label>
+            <input
+              id="email-password"
+              type="password"
+              value={emailPassword}
+              onChange={(e) => setEmailPassword(e.target.value)}
+              className="h-9 rounded-md border bg-transparent px-3 text-sm outline-none focus:ring-2 focus:ring-ring"
+            />
+          </div>
           <Button
             size="sm"
             onClick={handleEmailSave}
-            disabled={savingEmail || newEmail === currentEmail || !newEmail}
+            disabled={savingEmail || newEmail === currentEmail || !newEmail || !emailPassword}
           >
             {savingEmail ? "Saving…" : "Save Email"}
           </Button>
@@ -160,6 +181,21 @@ export function AccountSettings() {
             disabled={savingPassword || !currentPassword || !newPassword || !confirmPassword}
           >
             {savingPassword ? "Saving…" : "Change Password"}
+          </Button>
+        </CardContent>
+      </Card>
+
+      <Separator />
+
+      {/* Logout */}
+      <Card>
+        <CardHeader>
+          <CardTitle className="text-base">Sign Out</CardTitle>
+          <CardDescription>Log out of your account on this device</CardDescription>
+        </CardHeader>
+        <CardContent>
+          <Button variant="destructive" size="sm" onClick={handleLogout}>
+            Log Out
           </Button>
         </CardContent>
       </Card>

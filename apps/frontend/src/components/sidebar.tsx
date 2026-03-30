@@ -1,8 +1,9 @@
 "use client";
 
+import Image from "next/image";
 import Link from "next/link";
-import { usePathname, useRouter } from "next/navigation";
-import { Shield, Activity, Settings, BarChart3, Key, LogOut, Vault } from "lucide-react";
+import { usePathname } from "next/navigation";
+import { Activity, Settings, BarChart3, Key, Vault } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Separator } from "@/components/ui/separator";
 import { useAuth } from "@/lib/auth";
@@ -16,22 +17,14 @@ const navItems = [
 ];
 
 export function Sidebar() {
-  const { userEmail, logout } = useAuth();
+  const { userEmail } = useAuth();
   const pathname = usePathname();
-  const router = useRouter();
-
-  function handleLogout() {
-    logout();
-    router.replace("/login");
-  }
 
   return (
     <aside className="flex h-screen w-60 flex-col border-r bg-sidebar">
       {/* Logo */}
       <div className="flex h-16 items-center gap-2.5 px-5">
-        <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-primary">
-          <Shield className="h-4 w-4 text-primary-foreground" />
-        </div>
+        <Image src="/logo-dark.png" alt="MaskProxy" width={32} height={32}/>
         <div className="flex flex-col leading-none">
           <span className="text-sm font-semibold text-sidebar-foreground">MaskProxy</span>
           <span className="text-xs text-muted-foreground">Privacy Middleware</span>
@@ -68,16 +61,7 @@ export function Sidebar() {
           <span className="text-xs text-muted-foreground">Proxy running · port 8080</span>
         </div>
         {userEmail && (
-          <div className="flex items-center justify-between">
-            <span className="truncate text-xs text-muted-foreground">{userEmail}</span>
-            <button
-              onClick={handleLogout}
-              className="ml-2 shrink-0 text-muted-foreground transition-colors hover:text-foreground"
-              aria-label="Log out"
-            >
-              <LogOut className="h-3.5 w-3.5" />
-            </button>
-          </div>
+          <span className="truncate text-xs text-muted-foreground">{userEmail}</span>
         )}
       </div>
     </aside>

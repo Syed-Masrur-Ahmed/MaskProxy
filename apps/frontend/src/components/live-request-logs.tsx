@@ -84,7 +84,7 @@ export function LiveRequestLogs() {
           </CardTitle>
           <CardDescription>Proxied LLM requests — PII masked before forwarding</CardDescription>
         </div>
-        <Button variant="outline" size="sm" className="gap-1.5">
+        <Button size="sm" className="gap-1.5 bg-primary text-white hover:bg-primary/90">
           <RefreshCw className="h-3.5 w-3.5" />
           Refresh
         </Button>
