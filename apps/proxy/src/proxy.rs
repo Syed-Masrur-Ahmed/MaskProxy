@@ -14,7 +14,7 @@ use uuid::Uuid;
 
 use crate::masker::ner::NER;
 use crate::masker::Masker;
-use crate::rehydrator::Rehydrator;
+use crate::rehydrator::{Rehydrator, SseRehydrator};
 use crate::router::{Router, UpstreamTarget};
 use crate::state::redis::RedisState;
 
@@ -28,6 +28,11 @@ pub struct RequestContext {
     pub request_body: Option<Bytes>,
     pub request_body_replaced: bool,
     pub response_buffer: Vec<u8>,
+    /// True when the upstream response is SSE (text/event-stream).
+    pub is_sse: bool,
+    /// SSE-aware streaming rehydrator — parses SSE events, extracts content
+    /// deltas, and handles partial placeholders spanning multiple events.
+    pub sse_rehydrator: SseRehydrator,
 }
 
 impl RequestContext {
@@ -41,6 +46,8 @@ impl RequestContext {
             request_body: None,
             request_body_replaced: false,
             response_buffer: Vec::new(),
+            is_sse: false,
+            sse_rehydrator: SseRehydrator::new(),
         }
     }
 }
@@ -584,6 +591,15 @@ impl ProxyHttp for MaskProxy {
     where
         Self::CTX: Send + Sync,
     {
+        // Detect SSE responses so response_body_filter can stream rehydration
+        // instead of buffering the entire body.
+        ctx.is_sse = upstream_response
+            .headers
+            .get("content-type")
+            .and_then(|v| v.to_str().ok())
+            .map(|ct| ct.contains("text/event-stream"))
+            .unwrap_or(false);
+
         if !ctx.token_map.is_empty() {
             upstream_response.remove_header("Content-Length");
             let _ = upstream_response.insert_header("Transfer-Encoding", "chunked");
@@ -605,30 +621,50 @@ impl ProxyHttp for MaskProxy {
             return Ok(None);
         }
 
-        if let Some(chunk) = body.take() {
-            if !append_chunk_with_limit(&mut ctx.response_buffer, &chunk, MAX_RESPONSE_BUFFER_BYTES)
-            {
-                return Err(Error::explain(
-                    InternalError,
-                    "upstream response exceeded buffer limit",
-                ));
-            }
-        }
+        if ctx.is_sse {
+            // --- Streaming SSE path ---
+            // The SseRehydrator parses SSE events, extracts content deltas,
+            // and handles partial placeholders that span multiple events.
+            let mut output = String::new();
 
-        if end_of_stream {
-            let text = String::from_utf8_lossy(&ctx.response_buffer);
-            let rehydrated = match self.rehydrator.rehydrate_body(&text, &ctx.token_map) {
-                Ok(rehydrated) => rehydrated,
-                Err(error) => {
-                    tracing::warn!(
-                        error = %error,
-                        "JSON rehydration failed; falling back to text rehydration"
-                    );
-                    self.rehydrator.rehydrate_text(&text, &ctx.token_map)
+            if let Some(chunk) = body.take() {
+                let chunk_str = String::from_utf8_lossy(&chunk);
+                output = ctx
+                    .sse_rehydrator
+                    .process_chunk(&chunk_str, &ctx.token_map);
+            }
+
+            if end_of_stream {
+                output.push_str(&ctx.sse_rehydrator.flush(&ctx.token_map));
+            }
+
+            if !output.is_empty() {
+                *body = Some(Bytes::from(output));
+            }
+        } else {
+            // --- Buffered path (non-streaming responses) ---
+            if let Some(chunk) = body.take() {
+                if !append_chunk_with_limit(
+                    &mut ctx.response_buffer,
+                    &chunk,
+                    MAX_RESPONSE_BUFFER_BYTES,
+                ) {
+                    return Err(Error::explain(
+                        InternalError,
+                        "upstream response exceeded buffer limit",
+                    ));
                 }
-            };
-            *body = Some(Bytes::from(rehydrated));
-            ctx.response_buffer.clear();
+            }
+
+            if end_of_stream {
+                let text = String::from_utf8_lossy(&ctx.response_buffer);
+                let rehydrated = self
+                    .rehydrator
+                    .rehydrate_body(&text, &ctx.token_map)
+                    .unwrap_or_else(|_| self.rehydrator.rehydrate_text(&text, &ctx.token_map));
+                *body = Some(Bytes::from(rehydrated));
+                ctx.response_buffer.clear();
+            }
         }
 
         Ok(None)
