@@ -179,9 +179,11 @@ impl SseRehydrator {
             output.push_str(&self.process_sse_event(&event, token_map));
         }
 
-        // Emit any incomplete event buffer as-is.
+        // Emit any incomplete event buffer — still apply text-level replacement
+        // so any complete placeholders in the partial event don't reach the client.
         if !self.event_buf.is_empty() {
-            output.push_str(&std::mem::take(&mut self.event_buf));
+            let remaining = std::mem::take(&mut self.event_buf);
+            output.push_str(&replace_placeholders(&remaining, token_map));
         }
 
         // Flush the content rehydrator — emits any partial placeholder as-is.
@@ -221,13 +223,22 @@ impl SseRehydrator {
         // Parse JSON payload.
         let mut json: Value = match serde_json::from_str(data) {
             Ok(v) => v,
-            Err(_) => return event.to_string(),
+            Err(_) => {
+                // Can't parse JSON — apply text-level replacement so any
+                // complete placeholders in the raw event don't pass through
+                // to the client as-is.
+                return replace_placeholders(event, token_map);
+            }
         };
 
         // Extract the content delta text.
         let content = match extract_content_delta(&json) {
             Some(c) => c,
-            None => return event.to_string(), // no content field — pass through
+            None => {
+                // No content delta in this event — apply text-level replacement
+                // as a safety net before passing through.
+                return replace_placeholders(event, token_map);
+            }
         };
 
         // Feed content through the streaming rehydrator.

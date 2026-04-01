@@ -658,10 +658,18 @@ impl ProxyHttp for MaskProxy {
 
             if end_of_stream {
                 let text = String::from_utf8_lossy(&ctx.response_buffer);
-                let rehydrated = self
-                    .rehydrator
-                    .rehydrate_body(&text, &ctx.token_map)
-                    .unwrap_or_else(|_| self.rehydrator.rehydrate_text(&text, &ctx.token_map));
+                let rehydrated = match self.rehydrator.rehydrate_body(&text, &ctx.token_map) {
+                    Ok(r) => r,
+                    Err(error) => {
+                        tracing::warn!(
+                            session_id = %ctx.session_id,
+                            %error,
+                            "rehydrate_body failed (non-JSON upstream response?), \
+                             falling back to text-level rehydration"
+                        );
+                        self.rehydrator.rehydrate_text(&text, &ctx.token_map)
+                    }
+                };
                 *body = Some(Bytes::from(rehydrated));
                 ctx.response_buffer.clear();
             }
