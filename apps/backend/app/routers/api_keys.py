@@ -7,6 +7,7 @@ from pydantic import BaseModel
 from sqlmodel import Session, select
 
 from app.auth import get_current_user
+from app.cache import RedisDep, delete_api_key_validation_cache, set_api_key_validation_cache
 from app.database import get_session
 from app.models import APIKey, User
 from app.security import generate_api_key, hash_api_key
@@ -34,21 +35,25 @@ class APIKeyPublicResponse(BaseModel):
 
 
 @router.post("", status_code=status.HTTP_201_CREATED, response_model=APIKeyCreatedResponse)
-def create_key(
+async def create_key(
     body: CreateKeyRequest,
     current_user: Annotated[User, Depends(get_current_user)],
     session: Annotated[Session, Depends(get_session)],
+    redis: RedisDep,
 ) -> APIKeyCreatedResponse:
     raw_key = generate_api_key()
+    hashed = hash_api_key(raw_key)
     api_key = APIKey(
         user_id=current_user.id,
         name=body.name,
         key_peek=raw_key[-4:],
-        hashed_key=hash_api_key(raw_key),
+        hashed_key=hashed,
     )
     session.add(api_key)
     session.commit()
     session.refresh(api_key)
+
+    await set_api_key_validation_cache(redis, hashed, current_user.id)
 
     return APIKeyCreatedResponse(
         id=api_key.id,
@@ -79,10 +84,11 @@ def list_keys(
 
 
 @router.delete("/{key_id}", status_code=status.HTTP_204_NO_CONTENT)
-def revoke_key(
+async def revoke_key(
     key_id: UUID,
     current_user: Annotated[User, Depends(get_current_user)],
     session: Annotated[Session, Depends(get_session)],
+    redis: RedisDep,
 ) -> None:
     api_key = session.exec(
         select(APIKey).where(APIKey.id == key_id, APIKey.user_id == current_user.id)
@@ -90,5 +96,8 @@ def revoke_key(
     if api_key is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Key not found")
 
+    hashed = api_key.hashed_key
     session.delete(api_key)
     session.commit()
+
+    await delete_api_key_validation_cache(redis, hashed)

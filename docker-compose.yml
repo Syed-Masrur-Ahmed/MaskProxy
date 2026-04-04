@@ -87,14 +87,26 @@ services:
     networks:
       - maskproxy
 
-  # ── Rust proxy (placeholder) ────────────────────────────────────────────────
+  # ── Rust proxy ──────────────────────────────────────────────────────────────
   proxy:
     build:
       context: apps/proxy
       dockerfile: Dockerfile
     restart: unless-stopped
+    env_file: .env
+    environment:
+      REDIS_URL: redis://cache:6379
+      API_BACKEND_URL: http://backend:8000
+      # Set to empty to disable NER (no model files in the image).
+      # Point to a mounted model path to enable NER.
+      NER_MODEL_PATH: ""
     ports:
       - "8080:8080"
+    depends_on:
+      backend:
+        condition: service_started
+      cache:
+        condition: service_healthy
     networks:
       - maskproxy
 
