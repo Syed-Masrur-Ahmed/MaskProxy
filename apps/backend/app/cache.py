@@ -10,7 +10,7 @@ from app.models import PrivacyConfig
 
 REDIS_URL = os.environ.get("REDIS_URL", "redis://localhost:6379/0")
 
-API_KEY_TTL = 300  # 5 minutes
+API_KEY_TTL = 86400  # 24 hours — proxy has no refresh path, TTL must outlive a session
 
 
 def get_redis(request: Request) -> aioredis.Redis:
