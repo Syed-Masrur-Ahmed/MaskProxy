@@ -274,6 +274,31 @@ fn sha256_hex(input: &str) -> String {
     format!("{:x}", hasher.finalize())
 }
 
+async fn send_cors_preflight(session: &mut Session) -> Result<()> {
+    let mut response = ResponseHeader::build(204, None)
+        .map_err(|error| Error::because(InternalError, "failed to build preflight response", error))?;
+    for (name, value) in cors_headers() {
+        response.insert_header(name, value).map_err(|error| {
+            Error::because(InternalError, "failed to set CORS header", error)
+        })?;
+    }
+    response.insert_header("content-length", "0").map_err(|error| {
+        Error::because(InternalError, "failed to set content-length", error)
+    })?;
+    session.write_response_header(Box::new(response), false).await?;
+    session.write_response_body(Some(Bytes::new()), true).await?;
+    Ok(())
+}
+
+fn cors_headers() -> [(&'static str, &'static str); 4] {
+    [
+        ("Access-Control-Allow-Origin", "*"),
+        ("Access-Control-Allow-Methods", "POST, OPTIONS"),
+        ("Access-Control-Allow-Headers", "Content-Type, Authorization, x-maskproxy-model"),
+        ("Access-Control-Max-Age", "86400"),
+    ]
+}
+
 async fn send_json_error(session: &mut Session, status: u16, message: &str) -> Result<()> {
     let mut response = ResponseHeader::build(status, None)
         .map_err(|error| Error::because(InternalError, "failed to build error response", error))?;
@@ -312,7 +337,7 @@ impl MaskProxy {
         let response = self
             .http_client
             .get(format!(
-                "{}/v1/provider-keys?provider={provider}",
+                "{}/v1/provider-keys/resolve?provider={provider}",
                 self.backend_api_url
             ))
             .header("authorization", format!("Bearer {raw_proxy_key}"))
@@ -354,6 +379,11 @@ impl ProxyHttp for MaskProxy {
     where
         Self::CTX: Send + Sync,
     {
+        if session.req_header().method.as_str() == "OPTIONS" {
+            send_cors_preflight(session).await?;
+            return Ok(true);
+        }
+
         let auth_header = session
             .req_header()
             .headers
@@ -505,6 +535,9 @@ impl ProxyHttp for MaskProxy {
         }
         upstream_request.remove_header("authorization");
         upstream_request.remove_header("x-api-key");
+        upstream_request.remove_header("x-maskproxy-model");
+        // Prevent compressed responses so the proxy can read and rehydrate the body
+        upstream_request.remove_header("accept-encoding");
 
         if let Some(provider_api_key) = &ctx.provider_api_key {
             match ctx.provider.as_str() {
@@ -530,9 +563,9 @@ impl ProxyHttp for MaskProxy {
                 }
                 "gemini" => {
                     upstream_request
-                        .insert_header("x-goog-api-key", provider_api_key.clone())
+                        .insert_header("authorization", format!("Bearer {provider_api_key}"))
                         .map_err(|error| {
-                            Error::because(InternalError, "failed to set Gemini key header", error)
+                            Error::because(InternalError, "failed to set Gemini auth header", error)
                         })?;
                 }
                 _ => {
@@ -591,6 +624,10 @@ impl ProxyHttp for MaskProxy {
     where
         Self::CTX: Send + Sync,
     {
+        for (name, value) in cors_headers() {
+            let _ = upstream_response.insert_header(name, value);
+        }
+
         // Detect SSE responses so response_body_filter can stream rehydration
         // instead of buffering the entire body.
         ctx.is_sse = upstream_response
