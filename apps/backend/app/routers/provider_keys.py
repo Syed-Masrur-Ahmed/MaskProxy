@@ -9,8 +9,9 @@ from sqlmodel import Session, select
 
 from app.auth import get_current_user
 from app.database import get_session
-from app.models import ProviderKey, User
-from app.security_utils import encrypt_key
+from app.models import APIKey, ProviderKey, User
+from app.security import hash_api_key, KEY_PREFIX
+from app.security_utils import decrypt_key, encrypt_key
 
 router = APIRouter(prefix="/v1/provider-keys", tags=["provider-keys"])
 
@@ -125,6 +126,53 @@ def list_provider_keys(
         )
         for k in keys
     ]
+
+
+_PROVIDER_NAME_MAP = {
+    "openai": "OpenAI",
+    "anthropic": "Anthropic",
+    "gemini": "Gemini",
+}
+
+
+from fastapi import Header
+
+
+@router.get("/resolve")
+def resolve_provider_key_for_proxy(
+    provider: str,
+    session: Annotated[Session, Depends(get_session)],
+    authorization: Annotated[str, Header()] = "",
+) -> dict:
+    """Internal endpoint called by the proxy to fetch the decrypted provider key.
+
+    Authenticates via mp_ API key (not JWT).
+    """
+    if not authorization.startswith("Bearer " + KEY_PREFIX):
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid API key")
+
+    raw_key = authorization[len("Bearer "):]
+    hashed = hash_api_key(raw_key)
+    api_key_row = session.exec(
+        select(APIKey).where(APIKey.hashed_key == hashed)
+    ).first()
+    if api_key_row is None:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="API key not found")
+
+    provider_name = _PROVIDER_NAME_MAP.get(provider.lower(), provider)
+    provider_key = session.exec(
+        select(ProviderKey).where(
+            ProviderKey.user_id == api_key_row.user_id,
+            ProviderKey.provider_name == provider_name,
+        )
+    ).first()
+    if provider_key is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"No {provider_name} key configured",
+        )
+
+    return {"api_key": decrypt_key(provider_key.encrypted_key)}
 
 
 @router.delete("/{key_id}", status_code=status.HTTP_204_NO_CONTENT)
