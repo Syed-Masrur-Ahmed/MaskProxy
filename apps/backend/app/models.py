@@ -44,6 +44,23 @@ class ProviderKey(SQLModel, table=True):
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
 
+class RequestLog(SQLModel, table=True):
+    __tablename__ = "request_logs"
+
+    id: UUID = Field(default_factory=uuid.uuid4, primary_key=True)
+    user_id: UUID = Field(foreign_key="users.id", index=True)
+    session_id: str = Field(index=True)
+    timestamp: datetime = Field(default_factory=lambda: datetime.now(timezone.utc), index=True)
+    provider: str
+    model: str
+    pii_detected_count: int = Field(default=0)
+    pii_types: str = Field(default="[]")  # JSON-encoded list, e.g. '["EMAIL","SSN"]'
+    route: str  # "cloud" or "local"
+    latency_ms: int = Field(default=0)
+    masked_prompt: str = Field(default="")
+    status_code: int = Field(default=200)
+
+
 class APIKey(SQLModel, table=True):
     __tablename__ = "api_keys"
 
