@@ -2,6 +2,24 @@
 // Works both in Docker and local dev without any env var in the browser.
 const BASE_URL = "/api";
 
+let _onUnauthorized: (() => void) | null = null;
+
+export function setUnauthorizedHandler(fn: () => void): void {
+  _onUnauthorized = fn;
+}
+
+async function apiFetch(
+  input: RequestInfo | URL,
+  init?: RequestInit,
+): Promise<Response> {
+  const res = await fetch(input, init);
+  if (res.status === 401) {
+    _onUnauthorized?.();
+    throw new Error("Session expired. Please log in again.");
+  }
+  return res;
+}
+
 // ── User Management ───────────────────────────────────────────────────────────
 
 export type UserProfile = {
@@ -11,13 +29,13 @@ export type UserProfile = {
 };
 
 export async function getMe(token: string): Promise<UserProfile> {
-  const res = await fetch(`${BASE_URL}/users/me`, { headers: authHeaders(token) });
+  const res = await apiFetch(`${BASE_URL}/users/me`, { headers: authHeaders(token) });
   if (!res.ok) throw new Error(`Failed to fetch profile: ${res.status}`);
   return res.json();
 }
 
 export async function updateEmail(token: string, email: string, password: string): Promise<UserProfile> {
-  const res = await fetch(`${BASE_URL}/users/me`, {
+  const res = await apiFetch(`${BASE_URL}/users/me`, {
     method: "PATCH",
     headers: authHeaders(token),
     body: JSON.stringify({ email, password }),
@@ -34,7 +52,7 @@ export async function updatePassword(
   current_password: string,
   new_password: string,
 ): Promise<void> {
-  const res = await fetch(`${BASE_URL}/users/me/password`, {
+  const res = await apiFetch(`${BASE_URL}/users/me/password`, {
     method: "PATCH",
     headers: authHeaders(token),
     body: JSON.stringify({ current_password, new_password }),
@@ -62,7 +80,7 @@ function authHeaders(token: string) {
 }
 
 export async function fetchConfig(token: string): Promise<PrivacyConfig> {
-  const res = await fetch(`${BASE_URL}/config`, {
+  const res = await apiFetch(`${BASE_URL}/config`, {
     headers: authHeaders(token),
   });
   if (!res.ok) throw new Error(`Failed to fetch config: ${res.status}`);
@@ -73,7 +91,7 @@ export async function saveConfig(
   token: string,
   patch: PrivacyConfigUpdate,
 ): Promise<PrivacyConfig> {
-  const res = await fetch(`${BASE_URL}/config`, {
+  const res = await apiFetch(`${BASE_URL}/config`, {
     method: "PATCH",
     headers: authHeaders(token),
     body: JSON.stringify(patch),
@@ -94,13 +112,13 @@ export type APIKey = {
 export type APIKeyCreated = APIKey & { key: string };
 
 export async function listKeys(token: string): Promise<APIKey[]> {
-  const res = await fetch(`${BASE_URL}/keys`, { headers: authHeaders(token) });
+  const res = await apiFetch(`${BASE_URL}/keys`, { headers: authHeaders(token) });
   if (!res.ok) throw new Error(`Failed to fetch keys: ${res.status}`);
   return res.json();
 }
 
 export async function createKey(token: string, name: string): Promise<APIKeyCreated> {
-  const res = await fetch(`${BASE_URL}/keys`, {
+  const res = await apiFetch(`${BASE_URL}/keys`, {
     method: "POST",
     headers: authHeaders(token),
     body: JSON.stringify({ name }),
@@ -110,7 +128,7 @@ export async function createKey(token: string, name: string): Promise<APIKeyCrea
 }
 
 export async function revokeKey(token: string, keyId: string): Promise<void> {
-  const res = await fetch(`${BASE_URL}/keys/${keyId}`, {
+  const res = await apiFetch(`${BASE_URL}/keys/${keyId}`, {
     method: "DELETE",
     headers: authHeaders(token),
   });
@@ -127,7 +145,7 @@ export type ProviderKey = {
 };
 
 export async function listProviderKeys(token: string): Promise<ProviderKey[]> {
-  const res = await fetch(`${BASE_URL}/v1/provider-keys`, { headers: authHeaders(token) });
+  const res = await apiFetch(`${BASE_URL}/v1/provider-keys`, { headers: authHeaders(token) });
   if (!res.ok) throw new Error(`Failed to fetch provider keys: ${res.status}`);
   return res.json();
 }
@@ -137,7 +155,7 @@ export async function addProviderKey(
   provider_name: string,
   raw_key: string,
 ): Promise<ProviderKey> {
-  const res = await fetch(`${BASE_URL}/v1/provider-keys`, {
+  const res = await apiFetch(`${BASE_URL}/v1/provider-keys`, {
     method: "POST",
     headers: authHeaders(token),
     body: JSON.stringify({ provider_name, raw_key }),
@@ -147,7 +165,7 @@ export async function addProviderKey(
 }
 
 export async function deleteProviderKey(token: string, keyId: string): Promise<void> {
-  const res = await fetch(`${BASE_URL}/v1/provider-keys/${keyId}`, {
+  const res = await apiFetch(`${BASE_URL}/v1/provider-keys/${keyId}`, {
     method: "DELETE",
     headers: authHeaders(token),
   });
