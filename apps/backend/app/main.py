@@ -9,7 +9,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.cache import REDIS_URL, RedisDep
 from app.database import create_db_and_tables
-from app.routers import auth, config, api_keys, provider_keys, users
+from app.routers import auth, config, api_keys, logs, provider_keys, users
 
 
 @asynccontextmanager
@@ -32,6 +32,7 @@ app.add_middleware(
 app.include_router(auth.router)
 app.include_router(config.router)
 app.include_router(api_keys.router)
+app.include_router(logs.router)
 app.include_router(provider_keys.router)
 app.include_router(users.router)
 
