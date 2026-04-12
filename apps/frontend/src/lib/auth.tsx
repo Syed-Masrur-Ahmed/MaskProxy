@@ -1,6 +1,7 @@
 "use client";
 
-import { createContext, useContext, useEffect, useState } from "react";
+import { createContext, useCallback, useContext, useEffect, useState } from "react";
+import { setUnauthorizedHandler } from "@/lib/api";
 
 type AuthContextType = {
   token: string | null;
@@ -18,6 +19,15 @@ function decodeEmail(token: string): string | null {
   try {
     const payload = JSON.parse(atob(token.split(".")[1]));
     return payload.sub ?? null;
+  } catch {
+    return null;
+  }
+}
+
+function getTokenExpiry(token: string): number | null {
+  try {
+    const payload = JSON.parse(atob(token.split(".")[1]));
+    return typeof payload.exp === "number" ? payload.exp * 1000 : null;
   } catch {
     return null;
   }
@@ -62,10 +72,32 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     await login(email, password);
   }
 
-  function logout() {
+  const logout = useCallback(() => {
     localStorage.removeItem("mp_token");
     setToken(null);
-  }
+  }, []);
+
+  // Register the 401 handler so any expired-token API response triggers logout.
+  useEffect(() => {
+    setUnauthorizedHandler(logout);
+  }, [logout]);
+
+  // Auto-logout when the JWT reaches its expiry time.
+  useEffect(() => {
+    if (!token) return;
+
+    const expiry = getTokenExpiry(token);
+    if (!expiry) return;
+
+    const msUntilExpiry = expiry - Date.now();
+    if (msUntilExpiry <= 0) {
+      logout();
+      return;
+    }
+
+    const timer = setTimeout(logout, msUntilExpiry);
+    return () => clearTimeout(timer);
+  }, [token, logout]);
 
   function updateToken(newToken: string) {
     localStorage.setItem("mp_token", newToken);
