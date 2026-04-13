@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use anyhow::anyhow;
 use async_trait::async_trait;
@@ -33,6 +33,15 @@ pub struct RequestContext {
     /// SSE-aware streaming rehydrator — parses SSE events, extracts content
     /// deltas, and handles partial placeholders spanning multiple events.
     pub sse_rehydrator: SseRehydrator,
+    // ── Logging fields ────────────────────────────────────────────────────
+    pub request_start: Option<std::time::Instant>,
+    pub model_hint: String,
+    pub route: String,
+    pub pii_detected_count: usize,
+    pub pii_types: Vec<String>,
+    pub masked_prompt_snippet: String,
+    pub upstream_status_code: u16,
+    pub raw_api_key: String,
 }
 
 impl RequestContext {
@@ -48,6 +57,14 @@ impl RequestContext {
             response_buffer: Vec::new(),
             is_sse: false,
             sse_rehydrator: SseRehydrator::new(),
+            request_start: Some(std::time::Instant::now()),
+            model_hint: String::new(),
+            route: String::new(),
+            pii_detected_count: 0,
+            pii_types: Vec::new(),
+            masked_prompt_snippet: String::new(),
+            upstream_status_code: 0,
+            raw_api_key: String::new(),
         }
     }
 }
@@ -268,6 +285,27 @@ fn resolve_upstream(
     })
 }
 
+/// Extract unique PII type names from token_map keys.
+/// Keys have the format `<<MASK:TYPE_N:MASK>>`, e.g. `<<MASK:EMAIL_1:MASK>>`.
+fn extract_pii_types(token_map: &HashMap<String, String>) -> Vec<String> {
+    let mut types: HashSet<String> = HashSet::new();
+    for key in token_map.keys() {
+        if let Some(inner) = key.strip_prefix("<<MASK:").and_then(|s| s.strip_suffix(":MASK>>")) {
+            // inner = "EMAIL_1", "PERSON_2", "PHONE_NUMBER_1", etc.
+            // Strip the trailing _N (digit suffix).
+            if let Some(last_underscore) = inner.rfind('_') {
+                let suffix = &inner[last_underscore + 1..];
+                if suffix.chars().all(|c| c.is_ascii_digit()) {
+                    types.insert(inner[..last_underscore].to_string());
+                    continue;
+                }
+            }
+            types.insert(inner.to_string());
+        }
+    }
+    types.into_iter().collect()
+}
+
 fn sha256_hex(input: &str) -> String {
     let mut hasher = Sha256::new();
     hasher.update(input.as_bytes());
@@ -398,6 +436,7 @@ impl ProxyHttp for MaskProxy {
         }
 
         let raw_proxy_key = auth_header["Bearer ".len()..].to_string();
+        ctx.raw_api_key = raw_proxy_key.clone();
         let hashed_key = sha256_hex(&raw_proxy_key);
         let user_id = match self
             .redis
@@ -417,6 +456,7 @@ impl ProxyHttp for MaskProxy {
         };
 
         let model_hint = extract_model_hint(session);
+        ctx.model_hint = model_hint.clone();
         ctx.provider = infer_provider(&model_hint).to_string();
 
         session.downstream_session.enable_retry_buffering();
@@ -446,8 +486,15 @@ impl ProxyHttp for MaskProxy {
         let mut resolved = resolve_upstream(prepared.upstream.clone())
             .map_err(|error| Error::because(InternalError, "invalid upstream URL", error))?;
 
+        // Populate logging metadata
+        ctx.pii_detected_count = prepared.token_map.len();
+        ctx.pii_types = extract_pii_types(&prepared.token_map);
+        let body_str = String::from_utf8_lossy(&prepared.request_body);
+        ctx.masked_prompt_snippet = body_str.chars().take(200).collect();
+
         match prepared.upstream {
             UpstreamTarget::Cloud(current_cloud_url) => {
+                ctx.route = "cloud".to_string();
                 let provider_api_key = match self
                     .resolve_provider_key(&user_id, &ctx.provider, &raw_proxy_key)
                     .await
@@ -493,6 +540,7 @@ impl ProxyHttp for MaskProxy {
                 ctx.request_body = Some(prepared.request_body);
             }
             UpstreamTarget::Local(_) => {
+                ctx.route = "local".to_string();
                 ctx.request_body = Some(prepared.request_body);
             }
         }
@@ -624,6 +672,8 @@ impl ProxyHttp for MaskProxy {
     where
         Self::CTX: Send + Sync,
     {
+        ctx.upstream_status_code = upstream_response.status.as_u16();
+
         for (name, value) in cors_headers() {
             let _ = upstream_response.insert_header(name, value);
         }
@@ -713,6 +763,61 @@ impl ProxyHttp for MaskProxy {
         }
 
         Ok(None)
+    }
+
+    async fn logging(
+        &self,
+        _session: &mut Session,
+        _e: Option<&pingora_core::Error>,
+        ctx: &mut Self::CTX,
+    ) {
+        // Skip logging for requests that never reached upstream (e.g. CORS preflight, auth failures)
+        if ctx.route.is_empty() || ctx.raw_api_key.is_empty() {
+            return;
+        }
+
+        let latency_ms = ctx
+            .request_start
+            .map(|start| start.elapsed().as_millis() as u64)
+            .unwrap_or(0);
+
+        let payload = serde_json::json!({
+            "session_id": ctx.session_id,
+            "provider": ctx.provider,
+            "model": ctx.model_hint,
+            "pii_detected_count": ctx.pii_detected_count,
+            "pii_types": ctx.pii_types,
+            "route": ctx.route,
+            "latency_ms": latency_ms,
+            "masked_prompt": ctx.masked_prompt_snippet,
+            "status_code": ctx.upstream_status_code,
+        });
+
+        let client = self.http_client.clone();
+        let url = format!("{}/v1/logs", self.backend_api_url);
+        let api_key = ctx.raw_api_key.clone();
+
+        tokio::spawn(async move {
+            let result = client
+                .post(&url)
+                .header("authorization", format!("Bearer {api_key}"))
+                .header("content-type", "application/json")
+                .json(&payload)
+                .send()
+                .await;
+            match result {
+                Ok(resp) if !resp.status().is_success() => {
+                    tracing::warn!(
+                        status = %resp.status(),
+                        "failed to send request log to backend"
+                    );
+                }
+                Err(error) => {
+                    tracing::warn!(%error, "failed to send request log to backend");
+                }
+                _ => {}
+            }
+        });
     }
 }
 

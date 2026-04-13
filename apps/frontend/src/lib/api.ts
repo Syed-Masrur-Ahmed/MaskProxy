@@ -171,3 +171,42 @@ export async function deleteProviderKey(token: string, keyId: string): Promise<v
   });
   if (!res.ok) throw new Error(`Failed to delete provider key: ${res.status}`);
 }
+
+// ── Request Logs ─────────────────────────────────────────────────────────────
+
+export type LogEntry = {
+  id: string;
+  session_id: string;
+  timestamp: string;
+  provider: string;
+  model: string;
+  pii_detected_count: number;
+  pii_types: string[];
+  route: string;
+  latency_ms: number;
+  masked_prompt: string;
+  status_code: number;
+};
+
+export type DashboardStats = {
+  requests_today: number;
+  pii_entities_masked: number;
+  avg_latency_ms: number;
+  local_route_pct: number;
+};
+
+export async function fetchLogs(token: string, limit = 50): Promise<LogEntry[]> {
+  const res = await apiFetch(`${BASE_URL}/v1/logs?limit=${limit}`, {
+    headers: authHeaders(token),
+  });
+  if (!res.ok) throw new Error(`Failed to fetch logs: ${res.status}`);
+  return res.json();
+}
+
+export async function fetchStats(token: string): Promise<DashboardStats> {
+  const res = await apiFetch(`${BASE_URL}/v1/logs/stats`, {
+    headers: authHeaders(token),
+  });
+  if (!res.ok) throw new Error(`Failed to fetch stats: ${res.status}`);
+  return res.json();
+}
