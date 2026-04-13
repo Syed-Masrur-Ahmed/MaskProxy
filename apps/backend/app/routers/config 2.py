@@ -14,13 +14,22 @@ router = APIRouter(prefix="/config", tags=["config"])
 
 
 @router.get("", response_model=PrivacyConfig)
-def get_config(
+async def get_config(
     current_user: Annotated[User, Depends(get_current_user)],
     session: Annotated[Session, Depends(get_session)],
+    redis: RedisDep,
 ) -> PrivacyConfig:
-    return session.exec(
+    cached = await get_privacy_config_cache(redis, current_user.id)
+    if cached is not None:
+        logger.info("config cache hit  user_id=%s", current_user.id)
+        return cached
+
+    logger.info("config cache miss user_id=%s", current_user.id)
+    config = session.exec(
         select(PrivacyConfig).where(PrivacyConfig.user_id == current_user.id)
     ).one()
+    await set_privacy_config_cache(redis, config)
+    return config
 
 
 @router.patch("", response_model=PrivacyConfig)
