@@ -3,11 +3,9 @@ FROM python:3.13-slim
 WORKDIR /app
 
 # Install dependencies first for layer caching
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
-
-# Copy source — in dev this layer is overridden by the volume mount
-COPY . .
+COPY pyproject.toml .
+COPY app ./app
+RUN pip install --no-cache-dir .
 
 EXPOSE 8000
 
