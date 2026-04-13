@@ -1,9 +1,10 @@
 import json
+from datetime import datetime, timezone
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, status
 from pydantic import BaseModel
-from sqlmodel import Session, select
+from sqlmodel import Session, select, func, case, col
 
 from app.auth import get_current_user
 from app.database import get_session
@@ -65,3 +66,102 @@ def create_log_entry(
     session.commit()
     session.refresh(log)
     return {"id": str(log.id), "status": "created"}
+
+
+# ── GET /v1/logs — dashboard query (JWT auth) ─────────────────────────────────
+
+class LogEntryResponse(BaseModel):
+    id: str
+    session_id: str
+    timestamp: str
+    provider: str
+    model: str
+    pii_detected_count: int
+    pii_types: list[str]
+    route: str
+    latency_ms: int
+    masked_prompt: str
+    status_code: int
+
+
+@router.get("", response_model=list[LogEntryResponse])
+def list_logs(
+    current_user: Annotated[User, Depends(get_current_user)],
+    session: Annotated[Session, Depends(get_session)],
+    limit: int = Query(default=50, le=200, ge=1),
+    offset: int = Query(default=0, ge=0),
+):
+    """Retrieve request logs for the authenticated user."""
+    logs = session.exec(
+        select(RequestLog)
+        .where(RequestLog.user_id == current_user.id)
+        .order_by(RequestLog.timestamp.desc())  # type: ignore[union-attr]
+        .offset(offset)
+        .limit(limit)
+    ).all()
+
+    return [
+        LogEntryResponse(
+            id=str(log.id),
+            session_id=log.session_id,
+            timestamp=log.timestamp.isoformat(),
+            provider=log.provider,
+            model=log.model,
+            pii_detected_count=log.pii_detected_count,
+            pii_types=json.loads(log.pii_types),
+            route=log.route,
+            latency_ms=log.latency_ms,
+            masked_prompt=log.masked_prompt,
+            status_code=log.status_code,
+        )
+        for log in logs
+    ]
+
+
+# ── GET /v1/logs/stats — aggregated dashboard stats (JWT auth) ────────────────
+
+class StatsResponse(BaseModel):
+    requests_today: int
+    pii_entities_masked: int
+    avg_latency_ms: float
+    local_route_pct: float
+
+
+@router.get("/stats", response_model=StatsResponse)
+def get_stats(
+    current_user: Annotated[User, Depends(get_current_user)],
+    session: Annotated[Session, Depends(get_session)],
+):
+    """Return aggregated stats for the current user for today (UTC)."""
+    today_start = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
+
+    row = session.exec(
+        select(
+            func.count().label("total"),
+            func.coalesce(func.sum(col(RequestLog.pii_detected_count)), 0).label("pii_total"),
+            func.coalesce(func.avg(col(RequestLog.latency_ms)), 0).label("avg_latency"),
+            func.coalesce(
+                func.sum(case((col(RequestLog.route) == "local", 1), else_=0)),
+                0,
+            ).label("local_count"),
+        ).where(
+            RequestLog.user_id == current_user.id,
+            col(RequestLog.timestamp) >= today_start,
+        )
+    ).first()
+
+    if row is None or row[0] == 0:
+        return StatsResponse(
+            requests_today=0,
+            pii_entities_masked=0,
+            avg_latency_ms=0.0,
+            local_route_pct=0.0,
+        )
+
+    total, pii_total, avg_latency, local_count = row
+    return StatsResponse(
+        requests_today=total,
+        pii_entities_masked=int(pii_total),
+        avg_latency_ms=round(float(avg_latency), 1),
+        local_route_pct=round(100.0 * int(local_count) / total, 1),
+    )
