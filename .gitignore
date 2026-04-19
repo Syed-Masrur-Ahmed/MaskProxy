@@ -51,6 +51,8 @@ apps/proxy/models/**
 !apps/proxy/models/DOCKER_MODELS.md
 !apps/proxy/models/**/
 !apps/proxy/models/**/README.md
+!apps/proxy/models/**/labels.json
+!apps/proxy/models/**/routes.json
 
 # Docker
 .env.*.local

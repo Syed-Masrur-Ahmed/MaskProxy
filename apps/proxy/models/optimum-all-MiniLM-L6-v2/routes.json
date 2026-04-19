@@ -1,0 +1,34 @@
+[
+  {
+    "text": "Summarize this patient discharge note for the care team.",
+    "target": "local"
+  },
+  {
+    "text": "Review this diagnosis summary and identify follow-up risks.",
+    "target": "local"
+  },
+  {
+    "text": "Analyze this financial transaction history for fraud indicators.",
+    "target": "local"
+  },
+  {
+    "text": "Classify these support tickets into billing, bug, and feature request.",
+    "target": "local"
+  },
+  {
+    "text": "What is the capital of Peru?",
+    "target": "cloud"
+  },
+  {
+    "text": "Explain quantum tunneling in simple terms.",
+    "target": "cloud"
+  },
+  {
+    "text": "Summarize the plot of The Great Gatsby.",
+    "target": "cloud"
+  },
+  {
+    "text": "Give me three ideas for a weekend trip from New York City.",
+    "target": "cloud"
+  }
+]
