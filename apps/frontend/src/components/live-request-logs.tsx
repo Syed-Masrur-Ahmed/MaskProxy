@@ -19,7 +19,7 @@ export function LiveRequestLogs() {
 
   const { data: logs = [], isLoading, refetch } = useQuery<LogEntry[]>({
     queryKey: ["request-logs"],
-    queryFn: () => fetchLogs(token!, 50),
+    queryFn: () => fetchLogs(token!, { limit: 50 }),
     enabled: !!token,
     refetchInterval: 5000,
   });

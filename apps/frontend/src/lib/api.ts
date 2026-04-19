@@ -195,10 +195,16 @@ export type DashboardStats = {
   local_route_pct: number;
 };
 
-export async function fetchLogs(token: string, limit = 50): Promise<LogEntry[]> {
-  const res = await apiFetch(`${BASE_URL}/v1/logs?limit=${limit}`, {
-    headers: authHeaders(token),
-  });
+export async function fetchLogs(
+  token: string,
+  opts: { limit?: number; offset?: number } = {},
+): Promise<LogEntry[]> {
+  const limit = opts.limit ?? 50;
+  const offset = opts.offset ?? 0;
+  const res = await apiFetch(
+    `${BASE_URL}/v1/logs?limit=${limit}&offset=${offset}`,
+    { headers: authHeaders(token) },
+  );
   if (!res.ok) throw new Error(`Failed to fetch logs: ${res.status}`);
   return res.json();
 }
