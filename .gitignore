@@ -30,6 +30,28 @@ Thumbs.db
 # Rust
 apps/proxy/target/
 
+# Review findings (internal notes, not shipped)
+apps/proxy/src/review-findings.md
+
+# Local Codex instructions
+AGENTS.md
+
+# Local Python tooling and notes
+apps/proxy/evals/
+apps/proxy/scripts/
+apps/proxy/vendor/
+docs/
+models/
+
+# Local model artifacts; keep README files tracked as install docs
+apps/proxy/models/**
+!apps/proxy/models/
+!apps/proxy/models/README.md
+!apps/proxy/models/download.py
+!apps/proxy/models/DOCKER_MODELS.md
+!apps/proxy/models/**/
+!apps/proxy/models/**/README.md
+
 # Docker
 .env.*.local
 
