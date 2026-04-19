@@ -24,6 +24,7 @@ import {
 } from "@/components/ui/dialog";
 import { useAuth } from "@/lib/auth";
 import { fetchLogs, type LogEntry } from "@/lib/api";
+import { MaskedPrompt } from "@/components/masked-prompt";
 
 const PAGE_SIZE_OPTIONS = [25, 50, 100, 200] as const;
 const COLUMNS =
@@ -135,9 +136,10 @@ export function LogsTable() {
                     <span className="font-mono text-xs text-muted-foreground">
                       {formatTime(log.timestamp)}
                     </span>
-                    <span className="truncate font-mono text-xs text-foreground">
-                      {log.masked_prompt || "—"}
-                    </span>
+                    <MaskedPrompt
+                      text={log.masked_prompt}
+                      className="truncate font-mono text-xs text-foreground"
+                    />
                     <span className="capitalize text-xs text-muted-foreground">
                       {log.provider}
                     </span>
@@ -286,7 +288,7 @@ function LogDetailDialog({
                 </dt>
                 <dd>
                   <pre className="max-h-60 overflow-auto whitespace-pre-wrap rounded-md border bg-muted/40 p-3 font-mono text-xs">
-                    {log.masked_prompt || "—"}
+                    <MaskedPrompt text={log.masked_prompt} />
                   </pre>
                 </dd>
               </dl>

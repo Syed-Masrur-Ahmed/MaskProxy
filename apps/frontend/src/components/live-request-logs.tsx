@@ -8,6 +8,7 @@ import { Button } from "@/components/ui/button";
 import { Activity, RefreshCw } from "lucide-react";
 import { useAuth } from "@/lib/auth";
 import { fetchLogs, type LogEntry } from "@/lib/api";
+import { MaskedPrompt } from "@/components/masked-prompt";
 
 function formatTime(isoTimestamp: string): string {
   const date = new Date(isoTimestamp);
@@ -72,9 +73,10 @@ export function LiveRequestLogs() {
                   <span className="font-mono text-xs text-muted-foreground">
                     {formatTime(log.timestamp)}
                   </span>
-                  <span className="truncate font-mono text-xs text-foreground">
-                    {log.masked_prompt || "—"}
-                  </span>
+                  <MaskedPrompt
+                    text={log.masked_prompt}
+                    className="truncate font-mono text-xs text-foreground"
+                  />
                   <span className="capitalize text-xs text-muted-foreground">{log.provider}</span>
                   <span>
                     {log.pii_detected_count > 0 ? (

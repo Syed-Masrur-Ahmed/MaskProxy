@@ -489,8 +489,9 @@ impl ProxyHttp for MaskProxy {
         // Populate logging metadata
         ctx.pii_detected_count = prepared.token_map.len();
         ctx.pii_types = extract_pii_types(&prepared.token_map);
-        let body_str = String::from_utf8_lossy(&prepared.request_body);
-        ctx.masked_prompt_snippet = body_str.chars().take(200).collect();
+        let masked_body_str = String::from_utf8_lossy(&prepared.request_body);
+        let prompt_text = extract_prompt_text(&masked_body_str);
+        ctx.masked_prompt_snippet = prompt_text.chars().take(200).collect();
 
         match prepared.upstream {
             UpstreamTarget::Cloud(current_cloud_url) => {
