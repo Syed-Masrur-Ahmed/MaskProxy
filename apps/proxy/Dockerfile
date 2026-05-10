@@ -1,3 +1,4 @@
+# syntax=docker/dockerfile:1.7
 FROM rust:1.91-slim AS builder
 
 # Build dependencies for native crates:
@@ -14,14 +15,20 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 WORKDIR /app
 
-# Stub main so dependencies are cached independently of source changes
-RUN mkdir src && echo 'fn main() {}' > src/main.rs
 COPY Cargo.toml Cargo.lock* ./
-RUN cargo build --release 2>/dev/null || true
-
-# Build the real binary
 COPY src ./src
-RUN touch src/main.rs && cargo build --release
+
+# BuildKit cache mounts persist the cargo registry, git index, and target dir
+# across image builds — even when Cargo.toml changes. Cargo's incremental
+# compilation reuses what it can.
+#
+# `target` lives in a cache mount, so it is NOT part of the image layer; we
+# copy the built binary out into the workdir before the layer finalizes.
+RUN --mount=type=cache,target=/usr/local/cargo/registry \
+    --mount=type=cache,target=/usr/local/cargo/git \
+    --mount=type=cache,target=/app/target \
+    cargo build --release && \
+    cp target/release/proxy /app/proxy
 
 # ---- runtime ----
 FROM debian:trixie-slim
@@ -31,7 +38,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
-COPY --from=builder /app/target/release/proxy .
+COPY --from=builder /app/proxy .
 
 EXPOSE 8080
 

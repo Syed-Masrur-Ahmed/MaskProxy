@@ -435,6 +435,8 @@ fn flush_prediction(
 fn normalize_label(label: &str) -> Option<&'static str> {
     match label.to_uppercase().as_str() {
         "PER" | "PERSON" | "PERSON_NAME" => Some("PERSON_NAME"),
+        "LOC" | "LOCATION" => Some("LOCATION"),
+        "ORG" | "ORGANIZATION" => Some("ORGANIZATION"),
         _ => None,
     }
 }
