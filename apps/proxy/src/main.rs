@@ -232,7 +232,9 @@ async fn ensure_ner_health(ner: &NER) -> Result<()> {
     }
 
     let smoke_text = "John Smith can be reached by the care team.";
-    let entities = ner.detect_entities(smoke_text).await?;
+    let entities = ner
+        .detect_entities(smoke_text, crate::masker::DEFAULT_NER_THRESHOLD)
+        .await?;
     ensure!(
         !entities.is_empty(),
         "NER startup health check failed: smoke test returned no entities"

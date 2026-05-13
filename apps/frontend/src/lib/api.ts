@@ -66,6 +66,7 @@ export async function updatePassword(
 export type PrivacyConfig = {
   mask_names: boolean;
   mask_locations: boolean;
+  mask_organizations: boolean;
   mask_finance: boolean;
   threshold: number;
 };

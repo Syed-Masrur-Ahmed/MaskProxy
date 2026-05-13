@@ -4,11 +4,11 @@ import { useState } from "react";
 import { User, Shield } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { AccountSettings } from "./account-settings";
-import { RoutingSettings } from "./routing-settings";
+import { PiiSettings } from "./pii-settings";
 
 const TABS = [
   { id: "account", label: "User Management", icon: User },
-  { id: "routing", label: "Routing Rules", icon: Shield },
+  { id: "pii", label: "PII Masking", icon: Shield },
 ] as const;
 
 type TabId = (typeof TABS)[number]["id"];
@@ -44,7 +44,7 @@ export default function SettingsPage() {
 
       {/* Tab content */}
       {activeTab === "account" && <AccountSettings />}
-      {activeTab === "routing" && <RoutingSettings />}
+      {activeTab === "pii" && <PiiSettings />}
     </div>
   );
 }

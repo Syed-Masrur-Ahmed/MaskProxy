@@ -6,9 +6,13 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Separator } from "@/components/ui/separator";
 import { fetchConfig, saveConfig, type PrivacyConfig } from "@/lib/api";
 import { useAuth } from "@/lib/auth";
-import { useToast } from "@/hooks/use-toast";
+import { toast } from "@/hooks/use-toast";
 
-type BoolKey = "mask_names" | "mask_locations" | "mask_finance";
+type BoolKey =
+  | "mask_names"
+  | "mask_locations"
+  | "mask_organizations"
+  | "mask_finance";
 
 const SETTINGS_META: { id: BoolKey; label: string; description: string }[] = [
   {
@@ -22,15 +26,19 @@ const SETTINGS_META: { id: BoolKey; label: string; description: string }[] = [
     description: "Replace location names with [LOCATION_N] tokens",
   },
   {
+    id: "mask_organizations",
+    label: "Mask Organizations",
+    description: "Replace organization names with [ORGANIZATION_N] tokens",
+  },
+  {
     id: "mask_finance",
-    label: "Mask Financial Data",
-    description: "Replace financial identifiers with [FINANCE_N] tokens",
+    label: "Mask SSN & Credit Cards",
+    description: "Replace SSNs and credit-card numbers with [SSN_N] / [CREDIT_CARD_N] tokens",
   },
 ];
 
-export function RoutingSettings() {
+export function PiiSettings() {
   const { token } = useAuth();
-  const { toast } = useToast();
   const [config, setConfig] = useState<PrivacyConfig | null>(null);
 
   useEffect(() => {

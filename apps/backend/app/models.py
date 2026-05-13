@@ -22,6 +22,7 @@ class PrivacyConfig(SQLModel, table=True):
     user_id: UUID = Field(foreign_key="users.id", unique=True, index=True)
     mask_names: bool = Field(default=True)
     mask_locations: bool = Field(default=True)
+    mask_organizations: bool = Field(default=True)
     mask_finance: bool = Field(default=True)
     threshold: float = Field(default=0.75)
 
@@ -29,6 +30,7 @@ class PrivacyConfig(SQLModel, table=True):
 class PrivacyConfigUpdate(SQLModel):
     mask_names: Optional[bool] = None
     mask_locations: Optional[bool] = None
+    mask_organizations: Optional[bool] = None
     mask_finance: Optional[bool] = None
     threshold: Optional[float] = None
 

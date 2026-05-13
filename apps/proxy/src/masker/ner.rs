@@ -9,8 +9,6 @@ use ort::{session::Session, value::TensorRef};
 use serde_json::Value;
 use tokenizers::Tokenizer;
 
-const DEFAULT_NER_CONFIDENCE_THRESHOLD: f32 = 0.75;
-
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Entity {
     pub text: String,
@@ -103,7 +101,7 @@ impl NER {
         self.backend.is_none()
     }
 
-    pub async fn detect_entities(&self, text: &str) -> Result<Vec<Entity>> {
+    pub async fn detect_entities(&self, text: &str, threshold: f32) -> Result<Vec<Entity>> {
         let Some(backend) = &self.backend else {
             return Ok(Vec::new());
         };
@@ -111,7 +109,7 @@ impl NER {
         let predictions = backend.predict(text)?;
         let entities = predictions
             .into_iter()
-            .filter(|prediction| prediction.score >= DEFAULT_NER_CONFIDENCE_THRESHOLD)
+            .filter(|prediction| prediction.score >= threshold)
             .filter_map(|prediction| {
                 normalize_label(&prediction.label).map(|kind| Entity {
                     text: text[prediction.start..prediction.end].to_string(),
@@ -449,10 +447,12 @@ mod tests {
     };
 
     #[test]
-    fn normalize_label_only_keeps_person_entities() {
+    fn normalize_label_keeps_supported_entities() {
         assert_eq!(normalize_label("PER"), Some("PERSON_NAME"));
         assert_eq!(normalize_label("PERSON"), Some("PERSON_NAME"));
-        assert_eq!(normalize_label("ORG"), None);
+        assert_eq!(normalize_label("LOC"), Some("LOCATION"));
+        assert_eq!(normalize_label("ORG"), Some("ORGANIZATION"));
+        assert_eq!(normalize_label("MISC"), None);
     }
 
     #[test]
