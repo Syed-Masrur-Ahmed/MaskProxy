@@ -1,6 +1,6 @@
 # MaskProxy
 
-A privacy middleware layer that sits between your application and any LLM API. It intercepts outgoing requests, masks personally identifiable information (names, emails, phone numbers, SSNs, addresses), forwards the sanitized prompt to the upstream model, then rehydrates the response with the original values before returning it to the caller.
+A privacy middleware layer that sits between your application and any LLM API. It intercepts outgoing requests, masks personally identifiable information (person names, organizations, locations, emails, phone numbers, SSNs, credit-card numbers), forwards the sanitized prompt to the upstream model, then rehydrates the response with the original values before returning it to the caller. Which categories get masked — and the NER confidence threshold — are configurable per tenant from the dashboard's **PII Masking** settings tab.
 
 ## Services
 

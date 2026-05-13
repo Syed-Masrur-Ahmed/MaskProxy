@@ -11,8 +11,10 @@ The product's core. Owns the transformation pipeline that sits between client an
 | Concern              | File                                            |
 |----------------------|-------------------------------------------------|
 | Pipeline orchestration | `apps/proxy/src/proxy.rs`                     |
-| Regex PII detection  | `apps/proxy/src/masker/mod.rs`                  |
-| NER PII detection    | `apps/proxy/src/masker/ner.rs`                  |
+| Regex PII detection  | `apps/proxy/src/masker/mod.rs` (EMAIL, PHONE, SSN, CREDIT_CARD) |
+| NER PII detection    | `apps/proxy/src/masker/ner.rs` (PERSON_NAME, LOCATION, ORGANIZATION) |
+| Per-tenant config    | `apps/proxy/src/masker/mod.rs` (`PrivacyConfig`, `entity_enabled`) |
+| Config fetch         | `apps/proxy/src/proxy.rs` (`load_privacy_config`) |
 | Placeholder format   | `apps/proxy/src/masker/mod.rs` (`<<MASK:TYPE_N:MASK>>`) |
 | Token map storage    | `apps/proxy/src/state/redis.rs`                 |
 | Response rewriting   | `apps/proxy/src/rehydrator/mod.rs`              |
@@ -21,6 +23,8 @@ The product's core. Owns the transformation pipeline that sits between client an
 **Interface:** Pingora's `ProxyHttp` trait. `upstream_request_filter` masks; `response_filter` rehydrates. Communication between the two phases is via a session-scoped Redis key.
 
 **Entity merging rule:** longest span wins; on tie, regex beats NER.
+
+**Per-request configuration:** after resolving the caller's `user_id` from the API key, the proxy fetches `privacy_config:<user_id>` from Redis and gates kinds via `entity_enabled` before placeholder substitution. NER confidence threshold is taken from the same config. `mask_finance` controls both `SSN` and `CREDIT_CARD`; `EMAIL` and `PHONE` are always on.
 
 ---
 
@@ -97,14 +101,21 @@ Per-tenant rules for which PII categories to mask.
 
 | Concern              | File                                            |
 |----------------------|-------------------------------------------------|
-| Schema               | `apps/backend/app/models.py` (`PrivacyConfig`)  |
+| Schema               | `apps/backend/app/models.py` (`PrivacyConfig`, `PrivacyConfigUpdate`) |
+| Idempotent column adds | `apps/backend/app/database.py` (`ALTER TABLE ... ADD COLUMN IF NOT EXISTS`) |
 | REST endpoints       | `apps/backend/app/routers/config.py`            |
-| Redis cache          | `apps/backend/app/cache.py`                     |
-| Proxy consumer       | `apps/proxy/src/state/redis.rs`                 |
-| UI                   | `apps/frontend/src/components/privacy-settings.tsx` |
-| Page                 | `apps/frontend/src/app/settings/page.tsx`       |
+| Redis cache (writer) | `apps/backend/app/cache.py`                     |
+| Proxy reader         | `apps/proxy/src/proxy.rs::load_privacy_config`  |
+| Proxy consumer       | `apps/proxy/src/masker/mod.rs` (`PrivacyConfig`, `entity_enabled`) |
+| API type             | `apps/frontend/src/lib/api.ts` (`PrivacyConfig`) |
+| UI                   | `apps/frontend/src/app/settings/pii-settings.tsx` |
+| Page                 | `apps/frontend/src/app/settings/page.tsx` (tab: PII Masking) |
 
-**Interface:** Write-through cache. Backend writes Postgres → Redis. Proxy reads Redis only.
+**Fields:** `mask_names`, `mask_locations`, `mask_organizations`, `mask_finance` (SSN + credit cards), `threshold` (NER confidence cutoff, 0.0–1.0). All booleans default to `true`; threshold defaults to `0.75`.
+
+**Interface:** Write-through cache. Backend writes Postgres → Redis (`privacy_config:<user_id>`). Proxy reads Redis only, fallback to defaults on miss or parse error.
+
+**Schema migration:** `database.py` runs an idempotent `ALTER TABLE ... ADD COLUMN IF NOT EXISTS` on startup for fields introduced after `SQLModel.metadata.create_all` first built the table. Used in lieu of Alembic; safe to re-run.
 
 ---
 
