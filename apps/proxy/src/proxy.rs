@@ -13,7 +13,7 @@ use url::Url;
 use uuid::Uuid;
 
 use crate::masker::ner::NER;
-use crate::masker::Masker;
+use crate::masker::{Masker, PrivacyConfig};
 use crate::rehydrator::{Rehydrator, SseRehydrator};
 use crate::router::{Router, UpstreamTarget};
 use crate::state::redis::RedisState;
@@ -121,13 +121,17 @@ impl MaskProxy {
         RequestContext::new()
     }
 
-    async fn prepare_request(&self, body_text: &str) -> anyhow::Result<PreparedRequest> {
+    async fn prepare_request(
+        &self,
+        body_text: &str,
+        config: &PrivacyConfig,
+    ) -> anyhow::Result<PreparedRequest> {
         let prompt = extract_prompt_text(body_text);
         let upstream = self.router.route(&prompt).await?;
 
         match upstream.clone() {
             UpstreamTarget::Cloud(_) => {
-                let masked = self.masker.mask(body_text).await?;
+                let masked = self.masker.mask(body_text, config).await?;
                 Ok(PreparedRequest {
                     upstream,
                     request_body: Bytes::from(masked.masked_body),
@@ -139,6 +143,24 @@ impl MaskProxy {
                 request_body: Bytes::from(body_text.to_string()),
                 token_map: HashMap::new(),
             }),
+        }
+    }
+
+    async fn load_privacy_config(&self, user_id: &str) -> PrivacyConfig {
+        let key = format!("privacy_config:{user_id}");
+        match self.redis.get_value(&key).await {
+            Ok(Some(raw)) => match serde_json::from_str::<PrivacyConfig>(&raw) {
+                Ok(config) => config,
+                Err(error) => {
+                    tracing::warn!(%user_id, %error, "failed to parse privacy_config; using defaults");
+                    PrivacyConfig::default()
+                }
+            },
+            Ok(None) => PrivacyConfig::default(),
+            Err(error) => {
+                tracing::warn!(%user_id, %error, "redis lookup for privacy_config failed; using defaults");
+                PrivacyConfig::default()
+            }
         }
     }
 }
@@ -480,9 +502,14 @@ impl ProxyHttp for MaskProxy {
             Error::because(InvalidHTTPHeader, "request body was not valid UTF-8", error)
         })?;
 
-        let prepared = self.prepare_request(&body_text).await.map_err(|error| {
-            Error::because(HTTPStatus(503), "failed to prepare upstream request", error)
-        })?;
+        let privacy_config = self.load_privacy_config(&user_id).await;
+
+        let prepared = self
+            .prepare_request(&body_text, &privacy_config)
+            .await
+            .map_err(|error| {
+                Error::because(HTTPStatus(503), "failed to prepare upstream request", error)
+            })?;
         let mut resolved = resolve_upstream(prepared.upstream.clone())
             .map_err(|error| Error::because(InternalError, "invalid upstream URL", error))?;
 

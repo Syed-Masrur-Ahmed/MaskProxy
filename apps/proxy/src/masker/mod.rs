@@ -3,6 +3,7 @@ use std::sync::LazyLock;
 
 use anyhow::Result;
 use regex::Regex;
+use serde::Deserialize;
 use serde_json::Value;
 
 use crate::masker::ner::{Entity, NER};
@@ -13,6 +14,8 @@ const CONTENT_PART_TEXT_KEYS: &[&str] = &["text"];
 const PRIORITY_REGEX: usize = 0;
 const PRIORITY_NER: usize = 10;
 
+pub const DEFAULT_NER_THRESHOLD: f32 = 0.75;
+
 static EMAIL_RE: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"(?i)\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b").expect("valid email regex")
 });
@@ -21,6 +24,59 @@ static PHONE_RE: LazyLock<Regex> = LazyLock::new(|| {
 });
 static SSN_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"\b\d{3}-\d{2}-\d{4}\b").expect("valid ssn regex"));
+// Credit-card patterns. Strict layouts (4-4-4-4 for most networks, 4-6-5 for
+// Amex) keep false positives low without needing Luhn validation. Boundary
+// checks in detect_regex_entities prevent matches inside longer digit runs.
+static CREDIT_CARD_16_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"\b\d{4}[- ]?\d{4}[- ]?\d{4}[- ]?\d{4}\b").expect("valid 16-digit cc regex")
+});
+static CREDIT_CARD_AMEX_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"\b3[47]\d{2}[- ]?\d{6}[- ]?\d{5}\b").expect("valid amex cc regex")
+});
+
+#[derive(Clone, Debug, Deserialize)]
+pub struct PrivacyConfig {
+    #[serde(default = "default_true")]
+    pub mask_names: bool,
+    #[serde(default = "default_true")]
+    pub mask_locations: bool,
+    #[serde(default = "default_true")]
+    pub mask_organizations: bool,
+    #[serde(default = "default_true")]
+    pub mask_finance: bool,
+    #[serde(default = "default_threshold")]
+    pub threshold: f32,
+}
+
+impl Default for PrivacyConfig {
+    fn default() -> Self {
+        Self {
+            mask_names: true,
+            mask_locations: true,
+            mask_organizations: true,
+            mask_finance: true,
+            threshold: DEFAULT_NER_THRESHOLD,
+        }
+    }
+}
+
+fn default_true() -> bool {
+    true
+}
+
+fn default_threshold() -> f32 {
+    DEFAULT_NER_THRESHOLD
+}
+
+fn entity_enabled(kind: &str, config: &PrivacyConfig) -> bool {
+    match kind {
+        "PERSON_NAME" => config.mask_names,
+        "LOCATION" => config.mask_locations,
+        "ORGANIZATION" => config.mask_organizations,
+        "SSN" | "CREDIT_CARD" => config.mask_finance,
+        _ => true,
+    }
+}
 
 #[derive(Clone, Debug, Default)]
 pub struct MappingState {
@@ -67,10 +123,10 @@ impl Masker {
         Self { ner }
     }
 
-    pub async fn mask(&self, body: &str) -> Result<MaskResult> {
+    pub async fn mask(&self, body: &str, config: &PrivacyConfig) -> Result<MaskResult> {
         let mut payload: Value = serde_json::from_str(body)?;
         let mut state = MappingState::default();
-        self.mask_payload(&mut payload, &mut state).await?;
+        self.mask_payload(&mut payload, &mut state, config).await?;
 
         Ok(MaskResult {
             masked_body: serde_json::to_string(&payload)?,
@@ -78,14 +134,19 @@ impl Masker {
         })
     }
 
-    async fn mask_payload(&self, payload: &mut Value, state: &mut MappingState) -> Result<()> {
+    async fn mask_payload(
+        &self,
+        payload: &mut Value,
+        state: &mut MappingState,
+        config: &PrivacyConfig,
+    ) -> Result<()> {
         if let Some(object) = payload.as_object_mut() {
             object.remove("session_id");
 
             if let Some(messages) = object.get_mut("messages").and_then(Value::as_array_mut) {
                 for message in messages {
                     if let Some(content) = message.get_mut("content") {
-                        self.mask_content_value(content, state).await?;
+                        self.mask_content_value(content, state, config).await?;
                     }
                 }
             }
@@ -93,12 +154,12 @@ impl Masker {
             if let Some(prompt) = object.get_mut("prompt") {
                 match prompt {
                     Value::String(text) => {
-                        *text = self.mask_text(text, state).await?;
+                        *text = self.mask_text(text, state, config).await?;
                     }
                     Value::Array(items) => {
                         for item in items.iter_mut() {
                             if let Value::String(text) = item {
-                                *text = self.mask_text(text, state).await?;
+                                *text = self.mask_text(text, state, config).await?;
                             }
                         }
                     }
@@ -110,21 +171,26 @@ impl Masker {
         Ok(())
     }
 
-    async fn mask_content_value(&self, value: &mut Value, state: &mut MappingState) -> Result<()> {
+    async fn mask_content_value(
+        &self,
+        value: &mut Value,
+        state: &mut MappingState,
+        config: &PrivacyConfig,
+    ) -> Result<()> {
         match value {
             Value::String(text) => {
-                *text = self.mask_text(text, state).await?;
+                *text = self.mask_text(text, state, config).await?;
             }
             Value::Array(items) => {
                 for item in items.iter_mut() {
                     match item {
                         Value::String(text) => {
-                            *text = self.mask_text(text, state).await?;
+                            *text = self.mask_text(text, state, config).await?;
                         }
                         Value::Object(map) => {
                             for key in CONTENT_PART_TEXT_KEYS {
                                 if let Some(Value::String(text)) = map.get_mut(*key) {
-                                    *text = self.mask_text(text, state).await?;
+                                    *text = self.mask_text(text, state, config).await?;
                                 }
                             }
                         }
@@ -138,13 +204,22 @@ impl Masker {
         Ok(())
     }
 
-    async fn mask_text(&self, text: &str, state: &mut MappingState) -> Result<String> {
-        let matches = merge_detected_entities(
+    async fn mask_text(
+        &self,
+        text: &str,
+        state: &mut MappingState,
+        config: &PrivacyConfig,
+    ) -> Result<String> {
+        let merged = merge_detected_entities(
             text,
             detect_regex_entities(text),
-            self.ner.detect_entities(text).await?,
+            self.ner.detect_entities(text, config.threshold).await?,
         );
-        Ok(mask_text_with_entities(text, &matches, state))
+        let filtered: Vec<Entity> = merged
+            .into_iter()
+            .filter(|entity| entity_enabled(&entity.kind, config))
+            .collect();
+        Ok(mask_text_with_entities(text, &filtered, state))
     }
 }
 
@@ -158,6 +233,8 @@ fn detect_regex_entities(text: &str) -> Vec<Entity> {
     let mut entities = Vec::new();
 
     push_regex_matches(text, &EMAIL_RE, "EMAIL", false, &mut entities);
+    push_regex_matches(text, &CREDIT_CARD_16_RE, "CREDIT_CARD", true, &mut entities);
+    push_regex_matches(text, &CREDIT_CARD_AMEX_RE, "CREDIT_CARD", true, &mut entities);
     push_regex_matches(text, &PHONE_RE, "PHONE", true, &mut entities);
     push_regex_matches(text, &SSN_RE, "SSN", false, &mut entities);
 
@@ -299,7 +376,7 @@ mod tests {
 
     use super::{
         detect_regex_entities, has_non_digit_boundaries, mask_text_with_entities,
-        merge_detected_entities, MappingState, Masker,
+        merge_detected_entities, MappingState, Masker, PrivacyConfig,
     };
     use crate::masker::ner::{Entity, NER};
 
@@ -357,7 +434,7 @@ mod tests {
         })
         .to_string();
 
-        let masked = masker.mask(&body).await.unwrap();
+        let masked = masker.mask(&body, &PrivacyConfig::default()).await.unwrap();
         let payload: serde_json::Value = serde_json::from_str(&masked.masked_body).unwrap();
 
         assert!(payload.get("session_id").is_none());
@@ -443,7 +520,7 @@ mod tests {
         })
         .to_string();
 
-        let masked = masker.mask(&body).await.unwrap();
+        let masked = masker.mask(&body, &PrivacyConfig::default()).await.unwrap();
         let payload: serde_json::Value = serde_json::from_str(&masked.masked_body).unwrap();
         let content = payload["messages"][0]["content"].as_str().unwrap();
 
@@ -725,7 +802,7 @@ mod tests {
         })
         .to_string();
 
-        let masked = masker.mask(&body).await.unwrap();
+        let masked = masker.mask(&body, &PrivacyConfig::default()).await.unwrap();
         let payload: serde_json::Value = serde_json::from_str(&masked.masked_body).unwrap();
         let content = payload["messages"][0]["content"].as_str().unwrap();
 
@@ -752,7 +829,7 @@ mod tests {
         })
         .to_string();
 
-        let masked = masker.mask(&body).await.unwrap();
+        let masked = masker.mask(&body, &PrivacyConfig::default()).await.unwrap();
         let payload: serde_json::Value = serde_json::from_str(&masked.masked_body).unwrap();
         let prompt = payload["prompt"].as_str().unwrap();
 
@@ -771,7 +848,7 @@ mod tests {
         })
         .to_string();
 
-        let masked = masker.mask(&body).await.unwrap();
+        let masked = masker.mask(&body, &PrivacyConfig::default()).await.unwrap();
         assert!(masked.token_map.is_empty());
     }
 
@@ -789,7 +866,7 @@ mod tests {
         })
         .to_string();
 
-        let masked = masker.mask(&body).await.unwrap();
+        let masked = masker.mask(&body, &PrivacyConfig::default()).await.unwrap();
         assert!(
             masked.token_map.contains_key("<<MASK:EMAIL_1:MASK>>"),
             "email not in token map"
@@ -798,5 +875,112 @@ mod tests {
             masked.token_map.contains_key("<<MASK:PHONE_1:MASK>>"),
             "phone not in token map"
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // Credit card + finance toggle evals
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn cc_visa_with_dashes_detected() {
+        assert_detected(
+            "card 4111-1111-1111-1111 expires soon",
+            "CREDIT_CARD",
+            "4111-1111-1111-1111",
+        );
+    }
+
+    #[test]
+    fn cc_visa_with_spaces_detected() {
+        assert_detected(
+            "card 4111 1111 1111 1111 ok",
+            "CREDIT_CARD",
+            "4111 1111 1111 1111",
+        );
+    }
+
+    #[test]
+    fn cc_visa_no_separators_detected() {
+        assert_detected(
+            "card 4111111111111111 ok",
+            "CREDIT_CARD",
+            "4111111111111111",
+        );
+    }
+
+    #[test]
+    fn cc_amex_15_digit_detected() {
+        assert_detected("amex 3782-822463-10005 ok", "CREDIT_CARD", "3782-822463-10005");
+    }
+
+    #[test]
+    fn cc_not_detected_inside_longer_digits() {
+        // 17 digits should not produce a CC match because of non-digit boundary check.
+        assert_not_detected_kind("blob 41111111111111110 ok", "CREDIT_CARD");
+    }
+
+    #[tokio::test]
+    async fn mask_finance_off_skips_ssn_and_cc() {
+        let masker = Masker::new(NER::disabled());
+        let config = PrivacyConfig {
+            mask_finance: false,
+            ..PrivacyConfig::default()
+        };
+        let body = json!({
+            "messages": [{
+                "role": "user",
+                "content": "SSN 123-45-6789 card 4111-1111-1111-1111 email a@b.com"
+            }],
+        })
+        .to_string();
+
+        let masked = masker.mask(&body, &config).await.unwrap();
+        let payload: serde_json::Value = serde_json::from_str(&masked.masked_body).unwrap();
+        let content = payload["messages"][0]["content"].as_str().unwrap();
+
+        assert!(content.contains("123-45-6789"), "SSN should be unmasked when finance off");
+        assert!(
+            content.contains("4111-1111-1111-1111"),
+            "CC should be unmasked when finance off"
+        );
+        assert!(!content.contains("a@b.com"), "email should still be masked");
+    }
+
+    #[tokio::test]
+    async fn mask_finance_on_keeps_ssn_and_cc() {
+        let masker = Masker::new(NER::disabled());
+        let body = json!({
+            "messages": [{
+                "role": "user",
+                "content": "SSN 123-45-6789 card 4111-1111-1111-1111"
+            }],
+        })
+        .to_string();
+
+        let masked = masker.mask(&body, &PrivacyConfig::default()).await.unwrap();
+        let payload: serde_json::Value = serde_json::from_str(&masked.masked_body).unwrap();
+        let content = payload["messages"][0]["content"].as_str().unwrap();
+
+        assert!(!content.contains("123-45-6789"), "SSN leaked");
+        assert!(!content.contains("4111-1111-1111-1111"), "CC leaked");
+        assert!(content.contains("<<MASK:SSN_1:MASK>>"));
+        assert!(content.contains("<<MASK:CREDIT_CARD_1:MASK>>"));
+    }
+
+    #[tokio::test]
+    async fn mask_names_off_keeps_email() {
+        // Negative regression: disabling a NER kind must not affect regex kinds.
+        let masker = Masker::new(NER::disabled());
+        let config = PrivacyConfig {
+            mask_names: false,
+            ..PrivacyConfig::default()
+        };
+        let body = json!({
+            "messages": [{"role": "user", "content": "Email a@b.com"}],
+        })
+        .to_string();
+
+        let masked = masker.mask(&body, &config).await.unwrap();
+        assert!(masked.token_map.contains_key("<<MASK:EMAIL_1:MASK>>"));
     }
 }

@@ -5,6 +5,7 @@ use super::{
 use anyhow::Result;
 use async_trait::async_trait;
 use crate::masker::ner::NER;
+use crate::masker::PrivacyConfig;
 use crate::router::{EmbeddingProvider, RouteTarget, Router, SemanticRouteStore};
 use crate::state::lancedb::RouteMatch;
 use crate::state::redis::RedisState;
@@ -180,7 +181,7 @@ async fn semantic_local_prepare_request_keeps_original_body() {
     })
     .to_string();
 
-    let prepared = proxy.prepare_request(&body).await.unwrap();
+    let prepared = proxy.prepare_request(&body, &PrivacyConfig::default()).await.unwrap();
 
     assert_eq!(
         prepared.upstream,
@@ -216,7 +217,7 @@ async fn semantic_cloud_prepare_request_masks_body() {
     })
     .to_string();
 
-    let prepared = proxy.prepare_request(&body).await.unwrap();
+    let prepared = proxy.prepare_request(&body, &PrivacyConfig::default()).await.unwrap();
     let prepared_text = String::from_utf8_lossy(&prepared.request_body);
 
     assert_eq!(
